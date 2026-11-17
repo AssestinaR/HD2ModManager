@@ -251,6 +251,16 @@ internal static class LowPollutionMappingPlanner
 		var kitsById = index.Kits.ToDictionary(kit => kit.ItemId);
 		var distinctIds = armorIds.Distinct().ToArray();
 
+		// 飞船 NPC（女舰长、维修技术员）没有真护甲：不参与承载件共识，单独按「根 unit → 素体躯干」规划。
+		foreach (var npcId in distinctIds.Where(KitNpcRecords.IsNpc))
+		{
+			results[npcId] = kitsById.TryGetValue(npcId, out var npcKit) && KitNpcRecords.TryGet(npcId, out var npc)
+				? PlanNpc(layout, npc, npcKit, modelKey)
+				: LowPollutionMappingPlan.Fail(npcId, string.Empty, modelKey, LowPollutionMappingStatus.Unavailable, "索引里找不到目标记录。");
+		}
+
+		distinctIds = distinctIds.Where(id => !KitNpcRecords.IsNpc(id)).ToArray();
+
 		var bodyRole = layout.UnitOf(LowPollutionRoles.HeadBody) is not null ? LowPollutionRoles.HeadBody : LowPollutionRoles.Body;
 		if (layout.UnitOf(bodyRole) is null)
 		{
@@ -334,6 +344,45 @@ internal static class LowPollutionMappingPlanner
 			results[id] = BuildMappedArmorPlan(index, layout, bodyRole, hasArms, torsoSlot, armorData[id], solved[id], activeSet, modelKey);
 
 		return results;
+	}
+
+	/// <summary>
+	/// 飞船 NPC 的映射（「硬来」，和替换 Mod 的做法一致）：NPC 的根 unit 当承载件，链接到素体的躯干（头身合并）unit，
+	/// NPC 的原版脸按实例隐藏。NPC 没有头盔也没有手臂件，所以必须头身合并（模型的头在躯干 unit 里）。
+	/// NPC 用自己的骨架（女舰长 69 根，玩家 90 根），不做重定向：模型可能变形，需要实机确认。
+	/// </summary>
+	private static LowPollutionMappingPlan PlanNpc(
+		LowPollutionLayout layout, KitNpcRecords.NpcRecord npc, GameDataAuthorityKit kit, string modelKey)
+	{
+		if (!layout.HeadMerge)
+			return Unavailable(kit, modelKey, "NPC 的头必须并进身体：这个素体是三槽，请先在 Mod 详情页打开「头身合并」并重新构建");
+		// 优先用这个 NPC 专用副本（压缩 unit 的 TocData 头部补了 NPC 的骨架引用，NPC 动画才驱动得了它；见 KitNpcRecords）。
+		// 没有（旧版压缩器写的布局，应用时会按新鲜度判断重编）就退回合体 unit：能显示但会是 T 字站姿。
+		var variant = layout.UnitsOf(npc.VariantRole).ToArray();
+		if (npc.RequiresNativeShell)
+		{
+			var rootUnit = SectionalExclusivePlanner.Hex(npc.RootUnitId);
+			if (variant.Length != 1 || !string.Equals(variant[0], rootUnit, StringComparison.OrdinalIgnoreCase))
+				return Unavailable(kit, modelKey, "缺少 SEAF 士兵原键补丁，请在应用映射时重新构建素体。");
+			return new(kit.ItemId, kit.DisplayName, modelKey, LowPollutionMappingStatus.Mapped, null, [], [], [], [],
+				["共用的 SEAF 士兵本体由原键补丁替换。重启游戏后生效。"]);
+		}
+		var standing = variant.Length != 0;
+		// 其次用「身体 + 手臂」合体 unit（头身合并时里面含头、躯干、腿和两只手臂）：NPC 没有手臂承载件，
+		// 只链躯干的话模型没有手（2026-11-16 实机：两个 NPC 都没有手，手里的东西悬在空中）。
+		var body = standing ? variant : layout.UnitsOf(LowPollutionRoles.BodyArms).ToArray();
+		if (body.Length == 0) body = layout.UnitsOf(LowPollutionRoles.HeadBody).ToArray();
+		if (body.Length == 0)
+			return Unavailable(kit, modelKey, "素体的压缩布局里没有头身合并的躯干 unit。");
+		var links = new Dictionary<ulong, string> { [npc.RootUnitId] = body[0] };
+		List<string> notes =
+		[
+			$"{npc.Name}是飞船 NPC，没有护甲记录：模型的整身（头、躯干、腿、手臂合成的 unit）直接覆盖他的根 unit，他的原版脸会按实例隐藏。",
+			standing
+				? "NPC 用自己的骨架（69 根，命名和玩家同一套）：链接的是补了 NPC 骨架引用的专用副本，按骨骼名对应，站姿需实机确认。"
+				: "这个素体是旧版压缩产物，没有 NPC 专用 unit：模型会显示但站成 T 字，请重新构建素体（应用时会自动重编）。",
+		];
+		return Mapped(kit, modelKey, links, npc.ExtraHideUnits, [SectionalExclusivePlanner.Hex(npc.RootUnitId)], body, notes);
 	}
 
 	private static List<CarrierHyperedge> BuildHyperedges(
@@ -662,10 +711,24 @@ internal static class LowPollutionMappingPlanner
 			}
 
 			notes.Add("头身合并（2 槽）：原版头盔的部件会在穿这套的角色身上隐藏（0.3 米半径内的同名部件都会隐藏）。");
+			// 民主官没有头盔、只有一张脸，脸不属于任何护甲记录：头已并进身体，模型的头会显示，所以把脸一并藏掉。
+			var extra = KitNonPlayerArmors.ExtraHideUnits(entry.Kit.ItemId);
+			if (extra.Count != 0)
+			{
+				hide.AddRange(extra);
+				// 民主官的披风是这套 FS-05 自己的披风槽（slot 1）部件：一般护甲的披风留给玩家自己选的披风，不藏；
+				// 民主官是 NPC，没有玩家选披风这回事，原版披风会盖在模型上，所以也藏掉。
+				hide.AddRange(SectionalExclusivePlanner.UnitsOf(entry.Kit)
+					.Where(unit => unit.Type == UnitTypeId && unit.Slot == capeSlot)
+					.Select(unit => unit.File));
+				notes.Add("头身合并：民主官没有头盔，他的脸（不属于任何护甲记录）和披风会一并隐藏，显示模型的头。");
+			}
 		}
 		else
 		{
 			notes.Add("3 槽：只映射躯干和手臂；模型的头不显示，戴什么头盔就显示什么头盔（想显示模型的头，再映射同名头盔）。");
+			if (KitNonPlayerArmors.ExtraHideUnits(entry.Kit.ItemId).Count != 0)
+				notes.Add("民主官没有头盔，3 槽下模型的头显示不出来，他保持原版的脸；想显示模型的头，请在 Mod 详情页打开「头身合并」。");
 		}
 
 		if (bodyArmsUnits.Count != 0)

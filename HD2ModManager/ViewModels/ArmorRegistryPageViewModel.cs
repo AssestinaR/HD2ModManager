@@ -9,6 +9,7 @@ using System.Windows;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.KitInstance;
 using HD2ModCore.Infrastructure.Sectional;
 using HD2ModManager.Models;
 using HD2ModManager.Services;
@@ -60,6 +61,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private readonly Dictionary<ArmorMappingPickerTab, IReadOnlyList<RuntimeArmorChoiceViewModel>> availableChoicesByTab = new();
 	private readonly Dictionary<string, RuntimeArmorChoiceViewModel> allAvailableChoicesByKey = new(StringComparer.OrdinalIgnoreCase);
 	private bool isSelectedProviderTwoSlotCompressed;
+	private bool isSelectedProviderThreeSlotCompressed;
 	private IReadOnlyDictionary<string, ArmorDisplayFacts> cachedArmorDisplayFacts = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
 	private IReadOnlyList<RuntimeArmorRegistryModel> modelDefinitions = [];
 	// 素体 key → 所属 Mod 在库里现在的名字。素体在界面上叫什么，以它为准（见 ApplySnapshot）。
@@ -641,7 +643,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var twinIndex = authority is not null
 			? ArmorTwinBundling.BuildTwinIndex(authority.Kits)
 			: ArmorTwinIndex.Empty;
-		return (await snapshotTask.ConfigureAwait(false), await catalogTask.ConfigureAwait(false), twinIndex);
+		// 飞船 NPC（女舰长、维修技术员）的伪记录：没有护甲记录，追加进目录才会出现在选品器里（见 KitNpcRecords）。
+		var catalog = await catalogTask.ConfigureAwait(false);
+		if (catalog.Count != 0) catalog = KitNpcRecords.AppendTo(catalog);
+		return (await snapshotTask.ConfigureAwait(false), catalog, twinIndex);
 	}
 
 	public async Task RefreshRuntimeStatusAsync()
@@ -1533,6 +1538,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	private void UpdateSelectedProviderTwoSlotState()
 	{
+		isSelectedProviderThreeSlotCompressed = false;
 		if (selectedProviderId is not { } openProviderId)
 		{
 			isSelectedProviderTwoSlotCompressed = false;
@@ -1560,6 +1566,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			modsDirectory,
 			openProvider.ModelKey,
 			lowPollutionMode: true);
+		isSelectedProviderThreeSlotCompressed = ArmorMappingPickerPlanner.IsThreeSlotCompressedCustomModel(
+			modsDirectory,
+			openProvider.ModelKey,
+			lowPollutionMode: true);
 	}
 
 	private void UpdateAvailablePickerProjection(bool forceReplaceActiveTab)
@@ -1572,7 +1582,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			cachedPickerBaseCatalog,
 			cachedManagedOwnerByItemId,
 			activeSelectedKeys,
-			isSelectedProviderTwoSlotCompressed);
+			isSelectedProviderTwoSlotCompressed,
+			isSelectedProviderThreeSlotCompressed,
+			SettingsService.GetEffectiveLowPollutionMode(),
+			selectedProviderId is { } providerId && Choices.GetValueOrDefault(providerId) is { IsCustomModel: true });
 
 		SyncPickerTab(ArmorMappingPickerTab.Set, projection.Sets, activeSelectedKeys, forceReplaceActiveTab);
 		SyncPickerTab(ArmorMappingPickerTab.Armor, projection.Armors, activeSelectedKeys, forceReplaceActiveTab);
@@ -1683,7 +1696,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			selectionKeyOverride: plan.SelectionKey,
 			pickerTab: plan.Tab,
 			versionCount: plan.VersionCount,
-			isDemocracyOfficerNpc: plan.IsDemocracyOfficerNpc,
+			isNpc: plan.IsNpc,
 			isBlocked: plan.IsBlocked,
 			blockedReason: plan.BlockedReason);
 		choice.SetPickerPresentation(plan.TypeLabel, plan.IsTwinBundle, plan.TwinSetCount, plan.TwinBundleNote);
@@ -1766,6 +1779,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			|| choice.Name.Contains(term, StringComparison.CurrentCultureIgnoreCase)
 			|| choice.ArchiveId.Contains(term, StringComparison.OrdinalIgnoreCase)
 			|| choice.ItemIdText.Contains(term, StringComparison.OrdinalIgnoreCase)
+			// 民主官 NPC 的名字就是 FS-05 的名字，行上显示的「民主官 NPC」标签也要能搜到。
+			|| (choice.IsNpc && (KitNonPlayerArmors.NpcTag(choice.ItemId) ?? string.Empty).Contains(term, StringComparison.CurrentCultureIgnoreCase))
 			|| choice.MemberItemIds.Any(id => id.ToString(CultureInfo.InvariantCulture).Contains(term, StringComparison.OrdinalIgnoreCase));
 	}
 
@@ -1961,6 +1976,18 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		target.SetLowPollutionMark(blocked.Status == "not-deployed" ? "未部署" : "低污染模式下不可", blocked.Reason);
 	}
 
+	/// <summary>有素体的 NPC 专用 unit 和现在的映射对不上（没人用了要清，缺了要补）：低污染开着才有意义。</summary>
+	private bool HasLeftoverNpcUnits(IReadOnlyList<RuntimeArmorRegistryMapping> desired)
+	{
+		var modsDirectory = SettingsService.CreateStoragePaths().ModsDirectory;
+		return SettingsService.GetEffectiveLowPollutionMode()
+			? LowPollutionFreshness.AnyNpcVariantMismatch(
+				modsDirectory,
+				LowPollutionFreshness.SourceModelKeys(Enabled, desired),
+				LowPollutionFreshness.NpcItemIdsByModel(Enabled ? desired : []))
+			: LowPollutionFreshness.LeftoverNpcModelKeys(modsDirectory, [], nativeOnly: true).Count != 0;
+	}
+
 	/// <summary>
 	/// 低污染映射前的素体准备（规划 §12.1）：只看这次映射用到的素体，逐个判断是不是当前设置下的最新产物，
 	/// 只对需要的重编（走详情页「切换」那条 <see cref="ModCompileService.CompileAsync"/>，目标是自己的素体）。
@@ -1971,22 +1998,31 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	{
 		var empty = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		// 只有被某条映射关联的素体才进判断；只列在左边、没有任何目标的素体不编译。
-		var keys = LowPollutionFreshness.SourceModelKeys(Enabled, desired);
-		if (keys.Count == 0) return empty;
-
+		var sourceKeys = LowPollutionFreshness.SourceModelKeys(Enabled, desired);
 		var paths = SettingsService.CreateStoragePaths();
 		var lowPollution = SettingsService.GetEffectiveLowPollutionMode();
+		// 飞船 NPC（女舰长、维修技术员）的专用 unit 只为「映射了 NPC 的素体」生成：按素体归拢这次映射里的 NPC。
+		var npcByModel = LowPollutionFreshness.NpcItemIdsByModel(Enabled && lowPollution ? desired : []);
+		var seafSources = npcByModel.Where(pair => pair.Value.Contains(KitNpcRecords.SeafSoldierItemId)).Select(pair => pair.Key).ToArray();
+		var staleSeafKeys = LowPollutionFreshness.LeftoverNpcModelKeys(paths.ModsDirectory, seafSources, nativeOnly: true)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		// 以前给 NPC 生成过专用 unit、现在已经没有映射引用的素体：也要判断一次，重编时把它们清掉（NPC 的资源只留一份）。
+		var leftoverKeys = lowPollution ? LowPollutionFreshness.LeftoverNpcModelKeys(paths.ModsDirectory, sourceKeys) : [];
+		var keys = staleSeafKeys.Concat(sourceKeys).Concat(leftoverKeys).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+		if (keys.Length == 0) return empty;
 		var nodes = library.Snapshot.Nodes.Values.ToArray();
 		ModNode? NodeOf(string modDirectory) => nodes.FirstOrDefault(candidate => string.Equals(
 			Path.GetFullPath(Path.Combine(library.ModsRootDirectory, candidate.RelativePath)).TrimEnd('\\', '/'),
 			Path.GetFullPath(modDirectory).TrimEnd('\\', '/'),
 			StringComparison.OrdinalIgnoreCase));
 		// 提示里要写用户认得的 Mod 名：文件夹名常常只是一串创意工坊编号（2026-11-14 用户看不出是谁出错）。
-		var items = (await LowPollutionFreshness.PlanAsync(paths.ModsDirectory, keys, lowPollution).ConfigureAwait(true))
+		var items = (await LowPollutionFreshness.PlanAsync(paths.ModsDirectory, keys, lowPollution, npcByModel: npcByModel).ConfigureAwait(true))
 			.Select(item => NodeOf(item.ModDirectory)?.Metadata.Name is { Length: > 0 } displayName ? item with { Name = displayName } : item)
 			.ToList();
 		var need = items.Where(item => item.Status == LowPollutionPrepStatus.NeedsRecompile).ToArray();
 		var blocked = items.Where(item => item.Status == LowPollutionPrepStatus.Blocked).ToArray();
+		if (blocked.FirstOrDefault(item => staleSeafKeys.Contains(item.ModelKey)) is { } oldSeaf)
+			throw new InvalidOperationException($"无法清理 {oldSeaf.Name} 中上一次的 SEAF 补丁。{oldSeaf.Reason}");
 		if (need.Length == 0 && blocked.Length == 0) return empty;
 
 		var skipped = new HashSet<string>(blocked.Select(item => item.ModelKey), StringComparer.OrdinalIgnoreCase);
@@ -2021,20 +2057,32 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		StatusTitle = "正在重编素体";
 
 		var changedNodes = new List<ModNodeId>();
+		var pendingSeafCleanup = need.Where(item => staleSeafKeys.Contains(item.ModelKey))
+			.Select(item => item.ModelKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var result = await LowPollutionRecompiler.RunAsync(
 			items,
 			async (item, token) =>
 			{
+				if (pendingSeafCleanup.Count != 0 && seafSources.Contains(item.ModelKey, StringComparer.OrdinalIgnoreCase))
+					return (false, "上一份 SEAF 补丁还在，先清理旧补丁才能切换素体。");
 				var node = NodeOf(item.ModDirectory);
 				var outcome = await ModCompileService.CompileAsync(
 					node is null ? Path.GetFileName(item.ModDirectory.TrimEnd('\\', '/')) : node.Id.Value.ToString("N"),
 					item.ModDirectory,
-					SettingsService.CreateVpkHostContext(),
+					// 只给映射到这个素体的 NPC 生成专用 unit；没映射（或取消了）就是空，编译产物里不留 NPC 资源。
+					SettingsService.CreateVpkHostContext() with
+					{
+						NpcItemIds = npcByModel.TryGetValue(item.ModelKey, out var mappedNpcs) ? [.. mappedNpcs.Order()] : [],
+					},
 					[RuntimeArmorRegistryService.CustomModelArchiveId(item.ModelKey)],
 					null,
 					stage => task?.UpdateStage($"{item.Name}：{stage}"),
 					token).ConfigureAwait(true);
-				if (outcome.Ok && node is not null) changedNodes.Add(node.Id);
+				if (outcome.Ok)
+				{
+					pendingSeafCleanup.Remove(item.ModelKey);
+					if (node is not null) changedNodes.Add(node.Id);
+				}
 				return (outcome.Ok, outcome.Error ?? "编译失败。");
 			},
 			(index, total, item) =>
@@ -2073,6 +2121,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		LogService.Info("低污染模式：" + summary);
 		if (result.Failed.Count > 0) task?.MarkFailed(summary); else task?.MarkCompleted();
 		notifications.Show(summary, result.Failed.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning, TimeSpan.FromSeconds(16), "护甲注册");
+		if (result.Failed.FirstOrDefault(failure => staleSeafKeys.Contains(failure.Item.ModelKey)) is { Item: { } staleSeaf, Error: var cleanupError })
+			throw new InvalidOperationException($"无法清理 {staleSeaf.Name} 中上一次的 SEAF 补丁。{cleanupError}");
 		return skipped;
 	}
 
@@ -2100,7 +2150,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				.ToArray();
 			// 低污染模式（规划 §12.1）：先把这次用到、且还不是最新的素体重编好，再走原来的「先部署后映射」。
 			IReadOnlySet<string> skippedModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-			if (Enabled && desired.Any(mapping => mapping.IsModelMapping))
+			// 取消了 NPC 映射（或关了映射）后，素体里留着的 NPC 专用 unit 也要清掉：没人用的资源不留在补丁里。
+			var hasLeftoverNpcUnits = HasLeftoverNpcUnits(desired);
+			var prepareModels = (Enabled && desired.Any(mapping => mapping.IsModelMapping)) || hasLeftoverNpcUnits;
+			if (prepareModels)
 			{
 				var prepared = await PrepareSourceModelsAsync(desired).ConfigureAwait(true);
 				if (prepared is null)
@@ -2111,7 +2164,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				}
 				skippedModels = prepared;
 			}
-			if (!IsGameRunning() && Enabled && desired.Any(mapping => mapping.IsModelMapping))
+			if (!IsGameRunning() && prepareModels)
 			{
 				var deployment = await deploymentCoordinator.FlushAsync();
 				if (deployment.Stage != ProfileDeploymentStage.Completed)
@@ -2427,7 +2480,7 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		string? selectionKeyOverride = null,
 		ArmorMappingPickerTab? pickerTab = null,
 		int versionCount = 1,
-		bool isDemocracyOfficerNpc = false,
+		bool isNpc = false,
 		bool isBlocked = false,
 		string? blockedReason = null)
 	{
@@ -2447,7 +2500,7 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		this.selectionKeyOverride = selectionKeyOverride;
 		PickerTab = pickerTab;
 		VersionCount = versionCount;
-		IsDemocracyOfficerNpc = isDemocracyOfficerNpc;
+		IsNpc = isNpc;
 		this.isBlocked = isBlocked;
 		this.blockedReason = blockedReason;
 	}
@@ -2483,7 +2536,7 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public IReadOnlyList<uint> ProviderSourceItemIds => providerSourceItemIds;
 	public ArmorMappingPickerTab? PickerTab { get; }
 	public int VersionCount { get; }
-	public bool IsDemocracyOfficerNpc { get; }
+	public bool IsNpc { get; }
 	public bool IsBlocked { get => isBlocked; private set => SetField(ref isBlocked, value); }
 	public string? BlockedReason { get => blockedReason; private set => SetField(ref blockedReason, value); }
 	public bool IsCombined => memberItemIds.Count > 1;
@@ -2521,8 +2574,8 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		this.isTwinBundle = isTwinBundle;
 		this.twinSetCount = twinSetCount;
 		this.twinBundleNote = twinBundleNote;
-		var activation = IsDemocracyOfficerNpc
-			? ArmorMappingPickerPlanner.DemocracyOfficerTag
+		var activation = IsNpc
+			? KitNonPlayerArmors.NpcTag(ItemId) ?? "NPC"
 			: isTwinBundle
 				? (VersionCount > 1 ? $"换色孪生 · {twinSetCount} 套 · {VersionCount} 个版本" : $"换色孪生 · {twinSetCount} 套")
 				: VersionCount > 1

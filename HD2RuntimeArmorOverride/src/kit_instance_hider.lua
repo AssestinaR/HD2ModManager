@@ -17,7 +17,7 @@ local GLOBAL_KEY = 'HD2KitInstanceHider'
 local existing = rawget(_G, GLOBAL_KEY)
 if existing then return existing end
 
-local M = { version = '0.4.3', status = 'starting' }
+local M = { version = '0.4.5', status = 'starting' }
 rawset(_G, GLOBAL_KEY, M)
 
 local SWEEP_INTERVAL = 0.5          -- 秒：两次完整扫描的最小间隔
@@ -39,6 +39,41 @@ local HIDE_BUCKETS = { 0.2, 0.3, 0.4, 0.5, 0.7, 1.0 }
 -- 0.4.3：锚点位置当轮刷新（规划 kit-instance-mapping-deploy-plan §14.6）。任务里一轮扫描要 1 秒多，
 -- 上一轮的锚点位置已经跟不上跑动的人；本轮再扫到签名件时就地挪过去。只挪离它不超过这么远（米）的锚点。
 local ANCHOR_REFRESH_MAX = 10
+
+-- 0.4.4：民主官邻居清单（只读诊断）。只在世界里已确认到民主官（kit 124623533）的规则锚点时才收集：
+-- 把锚点 NEAR_RADIUS 米内的全部 unit 按资源 ID 合并后写成一行 officer_near（只在 ID 集合变化时写，最多 NEAR_MAX_LINES 行）。
+-- 用途：找出脸/头发这类不属于任何护甲记录、因此护甲映射隐藏不到的 unit。
+local NEAR_RULE_TAG = '124623533'
+local NEAR_RADIUS = 0.6
+local NEAR_MAX_LINES = 6
+local NEAR_MAX_IDS = 60
+
+-- 0.4.5：女舰长（飞船女军官）的头部清单（只读诊断）。「守岸人 替换 女舰长」Mod 把下面这批 NPC 头部 unit 的材质换成了空壳
+-- （离线扫描游戏数据得到，31 个）；不知道哪一个是女舰长的。这里把世界里这些头部实例到女军官根 unit 的距离列出来，
+-- 离她最近的那个就是。只对这几类 unit 读位置（先问有没有场景节点），不扫全部 unit。
+local FEMALE_ROOT = 'd87d04aacbc0269c'
+local HEAD_CANDIDATES = {}
+for id in ([[000c21cd9f8a2f16 0b52672cc600377f 0e83b059cda78a26 186e14d733c00dfa 1de1795c754cd4fc 1f3bba04dc7d12bf
+26ec3eb07a42c439 2cf637f920e10546 3698d7382672d30d 387f271c7f49614f 46f50507603729f3 4b6217d8636cf66b 4d4017549585cb8e
+4ec39827b643fc3d 541e4fb19053d6b0 5449813a9b155530 7234ae282b5d733c 7862870bc9822eeb 7b7065399142aa51 7deb6faab1224bf7
+8424786ad292815b 85d4ba84db7d27e5 8606f6d72d99f013 8dee773789f9d60c a065ebfcf8ad1afe a653c3fb4d4b36aa c380f637e9dadb28
+c685e61d82a4b7a7 dbf91b19df408bf3 e499f3bd49d0dcb9 f1d828c1603bf2d6]]):gmatch('%x+') do HEAD_CANDIDATES[id] = true end
+local HEAD_MAX_LINES = 6
+local HEAD_MAX_IDS = 12
+-- 0.4.5：女军官根 unit 周围 FNEAR_RADIUS 米内的全部 unit（按 ID 合并），找她的身体/头发/衣服。同 officer_near 的做法。
+local FNEAR_RADIUS = 1.2
+local FNEAR_MAX_LINES = 6
+local FNEAR_MAX_IDS = 80
+-- 0.4.5：玩家身边 PNEAR_RADIUS 米内的全部 unit（按 ID 合并，候选 NPC 头部加 * 标记）。站在任意 NPC（维修技术员等）旁边跑一次，
+-- 就能看到他的头部 unit 和身上其它 unit，不必先知道他的根 unit。
+local AVATAR_RESOURCE = 'content/fac_helldivers/cha_avatar/avatar_helldiver'
+local PNEAR_RADIUS = 5.0
+local PNEAR_MAX_LINES = 12
+local PNEAR_MAX_IDS = 150
+-- 0.4.5：离玩家最近的候选 NPC 头部。最近的换了、或离得更近了 0.2 米以上就写一行 player_nearest（最多 NEAREST_MAX_LINES 行），
+-- 所以不管你什么时候走到 NPC 旁边，日志里最后几行就是答案：谁离得最近，谁就是他的脸。
+local NEAREST_MAX_LINES = 30
+local NEAREST_STEP = 0.2
 
 -- 规则文件上限（§2；P6 S3 扩容，规划 kit-instance-mapping-deploy-plan §11.6）。每个规则文件各自适用。
 -- 压测（lupa）：每帧开销与规则数、hide 长度无关，约束只有文件大小和一次性解析。
@@ -261,7 +296,16 @@ function M.new(env)
 	local read_mapping_rules = env.read_mapping_rules
 	-- 诊断间隔（秒）；nil = 不写 diag（离线测试默认关，游戏内安装时打开）。
 	local diag_interval = env.diag_interval
-	local H = { stopped = false, hide_errors = 0, sweeps = 0, revision = nil }
+	local H = { stopped = false, hide_errors = 0, sweeps = 0, revision = nil, near_lines = 0 }
+	local lastNear = nil
+	local lastHeads = nil
+	local lastFnear = nil
+	local lastPnear = nil
+	local lastNearestId, lastNearestD = nil, nil
+	H.head_lines = 0
+	H.fnear_lines = 0
+	H.pnear_lines = 0
+	H.nearest_lines = 0
 	local bytes = 0
 
 	local function emit(kind, fields)
@@ -408,7 +452,27 @@ function M.new(env)
 			count = i
 		end
 		return { world = 1, cursor = 1, worldCount = count, seen = {}, hidden = 0, missed = 0,
-			scanned = 0, cpu_ms = 0, frames = 0, misses = {}, missIds = 0, capped = 0, largest = 0, refreshed = 0 }
+			scanned = 0, cpu_ms = 0, frames = 0, misses = {}, missIds = 0, capped = 0, largest = 0, refreshed = 0,
+			near = {}, nearCount = 0, officer = {}, roots = {}, heads = {}, fnear = {}, fnearCount = 0, pnear = {}, pnearCount = 0, players = false }
+	end
+
+	-- 0.4.4：这个 world 里已确认的民主官锚点（本轮缓存；没有时为 false）。
+	local function officer_anchors(world)
+		local cached = sweep.officer[world]
+		if cached ~= nil then return cached end
+		local list = {}
+		for _, anchor in ipairs(confirmed[world] or {}) do
+			local rule = rules[anchor.rule]
+			if rule and rule.name:find(NEAR_RULE_TAG, 1, true) then list[#list + 1] = anchor end
+		end
+		cached = #list > 0 and list or false
+		-- 实机闪退排查：第一次开始收集邻居前先落一行（日志每行即刷盘）。下次再崩，看它之后有没有 officer_near 就知道崩在不在这条路径上。
+		if cached and not H.near_begun then
+			H.near_begun = true
+			emit('near_begin', { anchors = #list, radius = NEAR_RADIUS })
+		end
+		sweep.officer[world] = cached
+		return cached
 	end
 
 	-- 返回：是否在某个锚点的半径内，以及离同规则锚点的最近距离（米，没有锚点为 nil，只给诊断用）。
@@ -508,6 +572,23 @@ function M.new(env)
 		end
 		local total = #units
 		local count = math.min(total, MAX_UNITS_PER_WORLD)
+		if sweep.cursor == 1 and diag_interval and H.pnear_lines < PNEAR_MAX_LINES then
+			local okA, avatarList = try(function() return World.units_by_resource(world, AVATAR_RESOURCE) end)
+			local found = {}
+			if okA and type(avatarList) == 'table' then
+				for i = 1, math.min(#avatarList, 4) do
+					local au = avatarList[i]
+					if au ~= nil and alive(au) then
+						local okN, an = try(Unit.num_scene_graph_items, au)
+						if okN and type(an) == 'number' and an >= 1 then
+							local ax, ay, az = position(au)
+							if ax ~= nil then found[#found + 1] = { x = ax, y = ay, z = az } end
+						end
+					end
+				end
+			end
+			sweep.players = #found > 0 and found or false
+		end
 		if sweep.cursor == 1 then
 			if total > sweep.largest then sweep.largest = total end
 			if total > MAX_UNITS_PER_WORLD then sweep.capped = sweep.capped + 1 end
@@ -522,6 +603,82 @@ function M.new(env)
 				local okR, raw = try(Unit.resource_name, unit)
 				local id = okR and M.decode_resource(raw) or nil
 				if id ~= nil then
+					if diag_interval and (H.head_lines < HEAD_MAX_LINES or H.fnear_lines < FNEAR_MAX_LINES) and (id == FEMALE_ROOT or HEAD_CANDIDATES[id]) then
+						-- 0.4.5：同样先问场景节点，没有就不读位置（0.4.4 的闪退教训）。
+						local okH, hnodes = try(Unit.num_scene_graph_items, unit)
+						if okH and type(hnodes) == 'number' and hnodes >= 1 then
+							local hx, hy, hz = position(unit)
+							if hx ~= nil then
+								local bucket = id == FEMALE_ROOT and sweep.roots or sweep.heads
+								bucket[#bucket + 1] = { world = sweep.world, id = id, x = hx, y = hy, z = hz }
+							end
+						end
+					end
+					if diag_interval and H.fnear_lines < FNEAR_MAX_LINES and H.female_roots then
+						local okF, fnodes = try(Unit.num_scene_graph_items, unit)
+						if okF and type(fnodes) == 'number' and fnodes >= 1 then
+							local fx, fy, fz = position(unit)
+							if fx ~= nil then
+								for _, r in ipairs(H.female_roots) do
+									if r.world == sweep.world then
+										local dx, dy, dz = fx - r.x, fy - r.y, fz - r.z
+										local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+										if d <= FNEAR_RADIUS then
+											local e = sweep.fnear[id]
+											if e == nil then e = { count = 0, dmin = d }; sweep.fnear[id] = e; sweep.fnearCount = sweep.fnearCount + 1 end
+											e.count = e.count + 1
+											if d < e.dmin then e.dmin = d end
+											break
+										end
+									end
+								end
+							end
+						end
+					end
+					if sweep.players and diag_interval and H.pnear_lines < PNEAR_MAX_LINES then
+						local okP, pnodes = try(Unit.num_scene_graph_items, unit)
+						if okP and type(pnodes) == 'number' and pnodes >= 1 then
+							local px, py, pz = position(unit)
+							if px ~= nil then
+								for _, pl in ipairs(sweep.players) do
+									local dx, dy, dz = px - pl.x, py - pl.y, pz - pl.z
+									local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+									if d <= PNEAR_RADIUS then
+										local e = sweep.pnear[id]
+										if e == nil then e = { count = 0, dmin = d }; sweep.pnear[id] = e; sweep.pnearCount = sweep.pnearCount + 1 end
+										e.count = e.count + 1
+										if d < e.dmin then e.dmin = d end
+										break
+									end
+								end
+							end
+						end
+					end
+					local officerList = diag_interval and H.near_lines < NEAR_MAX_LINES and officer_anchors(sweep.world) or false
+					if officerList then
+						-- 0.4.4 实机闪退：对世界里「任意」unit 读 world_position(unit, 1) 会让游戏直接崩（没有场景节点的 unit）。
+						-- 邻居清单要扫全部 unit，所以先问它有没有场景节点；没有就跳过，绝不读位置。
+						local nx, ny, nz = nil, nil, nil
+						local okN, nodes = try(Unit.num_scene_graph_items, unit)
+						if okN and type(nodes) == 'number' and nodes >= 1 then nx, ny, nz = position(unit) end
+						if nx ~= nil then
+							for _, a in ipairs(officerList) do
+								local dx, dy, dz = nx - a.x, ny - a.y, nz - a.z
+								local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+								if d <= NEAR_RADIUS then
+									local e = sweep.near[id]
+									if e == nil then
+										e = { count = 0, dmin = d }
+										sweep.near[id] = e
+										sweep.nearCount = sweep.nearCount + 1
+									end
+									e.count = e.count + 1
+									if d < e.dmin then e.dmin = d end
+									break
+								end
+							end
+						end
+					end
 					local tracked, hideSet = TRACK[id], HIDES[id]
 					if tracked or hideSet then
 						local x, y, z = position(unit)
@@ -617,6 +774,110 @@ function M.new(env)
 				emit_diag(t)
 			end
 		end
+		-- 0.4.4：民主官邻居清单（先于 confirmed 刷新，sweep.near 是用上一轮的锚点收的）。
+		if sweep.nearCount > 0 and H.near_lines < NEAR_MAX_LINES then
+			local ids = {}
+			for id in pairs(sweep.near) do ids[#ids + 1] = id end
+			table.sort(ids)
+			local signature = table.concat(ids, ' ')
+			if signature ~= lastNear then
+				lastNear = signature
+				H.near_lines = H.near_lines + 1
+				local list = {}
+				for i = 1, math.min(#ids, NEAR_MAX_IDS) do
+					local e = sweep.near[ids[i]]
+					list[i] = string.format('%s:%d:%.2f', ids[i], e.count, e.dmin)
+				end
+				emit('officer_near', { sweep = H.sweeps, radius = NEAR_RADIUS, units = #ids, neighbors = table.concat(list, ' ') })
+			end
+		end
+		-- 0.4.5：女舰长头部清单：每个候选头部 ID 到同 world 里最近的女军官根 unit 的距离，近的排前面。
+		if #sweep.roots > 0 and #sweep.heads > 0 and H.head_lines < HEAD_MAX_LINES then
+			local byId, ids = {}, {}
+			for _, h in ipairs(sweep.heads) do
+				local best
+				for _, r in ipairs(sweep.roots) do
+					if r.world == h.world then
+						local dx, dy, dz = h.x - r.x, h.y - r.y, h.z - r.z
+						local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+						if best == nil or d < best then best = d end
+					end
+				end
+				if best ~= nil then
+					local e = byId[h.id]
+					if e == nil then e = { id = h.id, count = 0, dmin = best }; byId[h.id] = e; ids[#ids + 1] = e end
+					e.count = e.count + 1
+					if best < e.dmin then e.dmin = best end
+				end
+			end
+			table.sort(ids, function(a, b)
+				if a.dmin == b.dmin then return a.id < b.id end
+				return a.dmin < b.dmin
+			end)
+			local parts = {}
+			for i = 1, math.min(#ids, HEAD_MAX_IDS) do
+				parts[i] = string.format('%s:%d:%.2f', ids[i].id, ids[i].count, ids[i].dmin)
+			end
+			local signature = table.concat(parts, ' ')
+			if #parts > 0 and signature ~= lastHeads then
+				lastHeads = signature
+				H.head_lines = H.head_lines + 1
+				emit('female_heads', { sweep = H.sweeps, roots = #sweep.roots, heads = #sweep.heads, nearest = signature })
+			end
+		end
+		-- 0.4.5：女军官根周围的邻居清单（用上一轮的根位置收的），随后更新根位置给下一轮用。
+		if sweep.fnearCount > 0 and H.fnear_lines < FNEAR_MAX_LINES then
+			local ids = {}
+			for id in pairs(sweep.fnear) do ids[#ids + 1] = id end
+			table.sort(ids)
+			local signature = table.concat(ids, ' ')
+			if signature ~= lastFnear then
+				lastFnear = signature
+				H.fnear_lines = H.fnear_lines + 1
+				local list = {}
+				for i = 1, math.min(#ids, FNEAR_MAX_IDS) do
+					local e = sweep.fnear[ids[i]]
+					list[i] = string.format('%s:%d:%.2f', ids[i], e.count, e.dmin)
+				end
+				emit('female_near', { sweep = H.sweeps, radius = FNEAR_RADIUS, units = #ids, neighbors = table.concat(list, ' ') })
+			end
+		end
+		if sweep.pnearCount > 0 and H.nearest_lines < NEAREST_MAX_LINES then
+			local bestId, bestD
+			for id, e in pairs(sweep.pnear) do
+				if HEAD_CANDIDATES[id] and (bestD == nil or e.dmin < bestD or (e.dmin == bestD and id < bestId)) then bestId, bestD = id, e.dmin end
+			end
+			if bestId ~= nil and (bestId ~= lastNearestId or bestD < lastNearestD - NEAREST_STEP) then
+				lastNearestId, lastNearestD = bestId, bestD
+				H.nearest_lines = H.nearest_lines + 1
+				emit('player_nearest', { sweep = H.sweeps, head = bestId, distance = string.format('%.2f', bestD), count = sweep.pnear[bestId].count })
+			end
+		end
+		if sweep.pnearCount > 0 and H.pnear_lines < PNEAR_MAX_LINES then
+			local ids = {}
+			for id in pairs(sweep.pnear) do ids[#ids + 1] = id end
+			table.sort(ids, function(a, b)
+				local ca, cb = HEAD_CANDIDATES[a] and 0 or 1, HEAD_CANDIDATES[b] and 0 or 1
+				if ca ~= cb then return ca < cb end
+				if sweep.pnear[a].dmin ~= sweep.pnear[b].dmin then return sweep.pnear[a].dmin < sweep.pnear[b].dmin end
+				return a < b
+			end)
+			-- 只在身边有候选 NPC 头部时才写；签名只看候选头部集合，避免刚进游戏时的零碎变化把行数用光。
+			local cands = {}
+			for _, id in ipairs(ids) do if HEAD_CANDIDATES[id] then cands[#cands + 1] = id end end
+			local signature = table.concat(cands, ' ')
+			if #cands > 0 and signature ~= lastPnear then
+				lastPnear = signature
+				H.pnear_lines = H.pnear_lines + 1
+				local list = {}
+				for i = 1, math.min(#ids, PNEAR_MAX_IDS) do
+					local e = sweep.pnear[ids[i]]
+					list[i] = string.format('%s%s:%d:%.2f', HEAD_CANDIDATES[ids[i]] and '*' or '', ids[i], e.count, e.dmin)
+				end
+				emit('player_near', { sweep = H.sweeps, radius = PNEAR_RADIUS, units = #ids, neighbors = table.concat(list, ' ') })
+			end
+		end
+		H.female_roots = #sweep.roots > 0 and sweep.roots or nil
 		confirmed, anchorCount = M.confirm_anchors(rules, sweep.seen)
 		-- missed 是「同 ID 但不在已确认锚点旁」的实例数：玩家或别的 NPC 穿着同款，正常不隐藏。
 		-- 只有 markers / hidden / revision 变化才写日志；missed 抖动不算。

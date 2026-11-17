@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure.KitInstance;
 using Microsoft.Data.Sqlite;
 
 namespace HD2ModCore.Infrastructure;
@@ -104,11 +105,13 @@ public static class ArmorAuthorityIndexReader
 			}
 		}
 
-		var withPieces = kits
+		var realKits = kits
 			.Select(kit => piecesByItem.TryGetValue(kit.ItemId, out var pieces)
 				? kit with { Pieces = pieces }
 				: kit)
 			.ToArray();
+		// 飞船 NPC（女舰长、维修技术员）的伪记录：没有护甲记录，给它们一件「根 unit」，映射页才能像护甲一样映射到他们身上。
+		var withPieces = realKits.Length == 0 ? realKits : KitNpcRecords.AppendTo(realKits).ToArray();
 
 		return new GameDataAuthoritySnapshot(
 			GameDataAuthoritySourceKind.IndexDatabase,

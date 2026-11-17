@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Decoration;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure.KitInstance;
 
 namespace HD2ModCore.Infrastructure.Sectional;
 
@@ -86,8 +87,26 @@ public static partial class SectionalCompiler
 			foreach (var member in plan.Passthrough)
 				renames.Add(new SectionalUnitRename(member.SourceUnitId, UnitKey(member.SourceUnitId)));
 
+			// 只为映射到这份头身合并素体的 NPC 生成专用 unit。整身优先从合体槽取，其次用头身合并躯干。
+			var npcVariants = new List<SectionalNpcVariant>();
+			var npcLayoutUnits = new List<(string Role, string Unit)>();
+			if (headMergeIntoBody && context.NpcItemIds.Count != 0)
+			{
+				var carrier = plan.Groups.Where(group => group.Role == SectionalCompressionRole.BodyArms).OrderBy(group => group.Body).FirstOrDefault()
+					?? plan.Groups.Where(group => group.Role == SectionalCompressionRole.HeadBody).OrderBy(group => group.Body).FirstOrDefault();
+				if (carrier is not null)
+				{
+					foreach (var npc in KitNpcRecords.All.Where(record => context.NpcItemIds.Contains(record.ItemId)))
+					{
+						var variantId = npc.VariantUnitId(carrier.UnitId);
+						npcVariants.Add(new SectionalNpcVariant(carrier.UnitId, new AssetKey(PatchUnitMeshReader.UnitTypeId, variantId), npc));
+						npcLayoutUnits.Add((npc.VariantRole, variantId.ToString("x16", CultureInfo.InvariantCulture)));
+					}
+				}
+			}
+
 			var patch = await SectionalUnitPatchWriter
-				.WriteAsync(pre, staging, renames, [], new SourceUnitHiddenUnitSource(), cancellationToken, merged)
+				.WriteAsync(pre, staging, renames, [], new SourceUnitHiddenUnitSource(), cancellationToken, merged, npcVariants, context.GameDataFolder)
 				.ConfigureAwait(false);
 			var staged = Path.Combine(staging, Path.GetFileName(pre));
 
@@ -113,7 +132,7 @@ public static partial class SectionalCompiler
 				: documented with { Units = [.. documented.Units.Where(unit => !bodyArms.Contains(unit.FileId))] };
 			await WriteStructureAsync(modDirectory, structure, components: null, cancellationToken).ConfigureAwait(false);
 			WriteLowPollutionRegistry(modDirectory, payload, plan, warnings);
-			WriteLowPollutionLayout(modDirectory, plan, LowPollutionFreshness.Fingerprint(payload, disabledSections, headMergeIntoBody));
+			WriteLowPollutionLayout(modDirectory, plan, LowPollutionFreshness.Fingerprint(payload, disabledSections, headMergeIntoBody), npcLayoutUnits);
 
 			info.Add(
 				$"低污染模式：素体压缩成 {plan.Groups.Count} 个 unit"
@@ -215,11 +234,12 @@ public static partial class SectionalCompiler
 		_ => SectionalCompressionPlanner.BodyPartOrder,
 	};
 
-	private static void WriteLowPollutionLayout(string modDirectory, SectionalCompressionPlan plan, string fingerprint)
+	private static void WriteLowPollutionLayout(
+		string modDirectory, SectionalCompressionPlan plan, string fingerprint, IReadOnlyList<(string Role, string Unit)>? extraUnits = null)
 	{
 		var destination = Path.Combine(ModNodePayloadLayout.GetOverwriteDirectory(modDirectory), LowPollutionLayoutFile.FileName);
 		VpkPayloadSwap.ClearReadOnlyForWrite(destination);
-		File.WriteAllText(destination, LowPollutionLayoutFile.Serialize(plan, fingerprint));
+		File.WriteAllText(destination, LowPollutionLayoutFile.Serialize(plan, fingerprint, extraUnits));
 	}
 
 	/// <summary>上一次压缩留在生效层里的描述文件：不再压缩（或换了目标）时必须删掉，否则 S3 会按过期布局写映射。</summary>

@@ -319,9 +319,11 @@ public sealed class KitExclusiveMultiTargetTests
 	// ── 非玩家表、全选、搜索 ──────────────────────────────────────
 
 	[Fact]
-	public void NonPlayerTable_ListsExactlyTheThreeKnownRecords()
+	public void NonPlayerTable_ListsTheThreeKnownRecordsAndTheShipNpcPseudoRecords()
 	{
-		Assert.Equal([124623533u, 2107035846u, 1969314276u], KitNonPlayerArmors.Entries.Select(entry => entry.ItemId));
+		Assert.Equal(
+			[124623533u, KitNpcRecords.FemaleCaptainItemId, KitNpcRecords.TechnicianItemId, KitNpcRecords.SeafSoldierItemId, 2107035846u, 1969314276u],
+			KitNonPlayerArmors.Entries.Select(entry => entry.ItemId));
 		Assert.True(KitNonPlayerArmors.TryGetLabel(124623533, out var npc));
 		Assert.Equal("非玩家（民主官 NPC）", npc);
 		Assert.True(KitNonPlayerArmors.TryGetLabel(2107035846, out var unobtainable));

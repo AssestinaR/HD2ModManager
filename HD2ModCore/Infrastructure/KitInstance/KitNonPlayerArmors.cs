@@ -25,12 +25,47 @@ public static class KitNonPlayerArmors
 	/// <summary>FS-05 民主官 NPC 护甲记录 ID。</summary>
 	public const uint DemocracyOfficerArmorId = 124623533u;
 
+	/// <summary>
+	/// 民主官 NPC 的脸：一个不属于任何护甲记录的 unit（飞船上的 NPC 头部，材质共 5 个）。
+	/// <para>
+	/// 依据（2026-11-16 实机，Hider 0.4.4 的 <c>officer_near</c> 清单）：民主官标记件 0.6 米内共 36 个 unit，
+	/// 其中只有它同时满足「不在任何护甲记录里」和「用到了『守岸人 替换 女舰长』Mod 覆盖的原版材质」——
+	/// 这正是装了那个 Mod 后民主官脸消失的原因。护甲映射的隐藏集管不到它，所以单独补进来。
+	/// 同一处还有 15678e36…、5b390845…、8085023e…、9512a3db…、be0be6b1… 等非护甲 unit，尚未确认是不是头发/眼睛。
+	/// </para>
+	/// </summary>
+	public const ulong DemocracyOfficerFaceUnitId = 0x7862870bc9822eebUL;
+
+	/// <summary>
+	/// 这条护甲记录穿在身上时、除自身部件外还要一并按实例隐藏的 unit（目前只有民主官的脸）。
+	/// <b>只在模型的头真的会显示时才用它</b>（头身合并生效）：否则民主官会没有头。
+	/// </summary>
+	public static IReadOnlyList<ulong> ExtraHideUnits(uint itemId)
+		=> itemId == DemocracyOfficerArmorId ? [DemocracyOfficerFaceUnitId]
+			: KitNpcRecords.TryGet(itemId, out var npc) ? npc.ExtraHideUnits
+			: [];
+
+	/// <summary>
+	/// 特殊 NPC：选品器里单独成行（带 NPC 标注、只在「套装」页出现），映射要求头并进身体。
+	/// 民主官（穿 FS-05 的那条记录）和飞船 NPC 伪记录（女舰长、维修技术员，见 <see cref="KitNpcRecords"/>）。
+	/// </summary>
+	public static bool IsSpecialNpc(uint itemId) => itemId == DemocracyOfficerArmorId || KitNpcRecords.IsNpc(itemId);
+
+	/// <summary>特殊 NPC 在选品器里的标注（「民主官 NPC」「NPC」…）；不是特殊 NPC 返回 <c>null</c>。</summary>
+	public static string? NpcTag(uint itemId)
+		=> itemId == DemocracyOfficerArmorId ? "民主官 NPC"
+			: KitNpcRecords.TryGet(itemId, out var npc) ? npc.Tag
+			: null;
+
 	/// <summary>一条非玩家记录。<paramref name="Label"/> 就是下拉里显示的标注。</summary>
 	public sealed record Entry(uint ItemId, string Label);
 
 	public static IReadOnlyList<Entry> Entries { get; } =
 	[
 		new(124623533u, "非玩家（民主官 NPC）"),    // FS-05，已实测
+		new(KitNpcRecords.FemaleCaptainItemId, "非玩家（NPC）"),   // 管理器自造的飞船 NPC 伪记录，见 KitNpcRecords
+		new(KitNpcRecords.TechnicianItemId, "非玩家（NPC）"),
+		new(KitNpcRecords.SeafSoldierItemId, "非玩家（NPC）"),
 		new(2107035846u, "非玩家（拿不到）"),       // CM-09
 		new(1969314276u, "非玩家（拿不到）"),       // SC-30
 	];
