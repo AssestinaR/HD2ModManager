@@ -258,7 +258,26 @@ public sealed class ModRepairBatchService : IModRepairBatchService
     {
         var candidates = EnumeratePatchFiles(candidateDirectory).ToArray();
         if (candidates.Length == 0) throw new InvalidDataException("重构候选不包含任何 Patch 或 sidecar 文件。");
-        foreach (var sourcePath in EnumeratePatchFiles(sourceDirectory).ToArray()) File.Delete(sourcePath);
+        var candidateGroups = new HashSet<PatchGroupKey>();
+        var hasParsedCandidateGroups = true;
+        foreach (var candidatePath in candidates)
+        {
+            if (fileNameParser.TryParse(Path.GetFileName(candidatePath), out var parsed) && parsed is not null)
+                candidateGroups.Add(new PatchGroupKey(parsed.ArchiveHex16, parsed.PatchIndex));
+            else
+                hasParsedCandidateGroups = false;
+        }
+        foreach (var sourcePath in EnumeratePatchFiles(sourceDirectory).ToArray())
+        {
+            if (hasParsedCandidateGroups
+                && fileNameParser.TryParse(Path.GetFileName(sourcePath), out var sourceParsed)
+                && sourceParsed is not null
+                && !candidateGroups.Contains(new PatchGroupKey(sourceParsed.ArchiveHex16, sourceParsed.PatchIndex)))
+            {
+                continue;
+            }
+            DeleteWritableFile(sourcePath);
+        }
         commitSeam?.Invoke("AfterDelete");
         foreach (var candidatePath in candidates) File.Copy(candidatePath, Path.Combine(sourceDirectory, Path.GetFileName(candidatePath)), overwrite: false);
         commitSeam?.Invoke("AfterCopy");
@@ -266,8 +285,17 @@ public sealed class ModRepairBatchService : IModRepairBatchService
 
     private void RestorePatchFiles(string sourceDirectory, string backupDirectory)
     {
-        foreach (var sourcePath in EnumeratePatchFiles(sourceDirectory).ToArray()) File.Delete(sourcePath);
+        foreach (var sourcePath in EnumeratePatchFiles(sourceDirectory).ToArray()) DeleteWritableFile(sourcePath);
         CopyPatchFiles(backupDirectory, sourceDirectory, overwrite: false);
+    }
+
+    private static void DeleteWritableFile(string path)
+    {
+        if (!File.Exists(path)) return;
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReadOnly) != 0)
+            File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+        File.Delete(path);
     }
 
     private IEnumerable<string> EnumeratePatchFiles(string directory)

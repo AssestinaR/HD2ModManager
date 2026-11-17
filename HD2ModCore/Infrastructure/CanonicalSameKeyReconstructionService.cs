@@ -24,6 +24,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     private readonly IPatchOperationWorkspaceFactory operationWorkspaceFactory;
     private readonly ICanonicalHiddenUnitOutputCache hiddenUnitCache;
     private readonly CanonicalHiddenUnitBuilder hiddenUnitBuilder;
+    private readonly IModStorageKindResolver storageKindResolver;
 
     public CanonicalSameKeyReconstructionService(
         IPatchFileNameParser fileNameParser,
@@ -44,6 +45,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         this.operationWorkspaceFactory = operationWorkspaceFactory ?? new PatchOperationWorkspaceFactory();
         this.hiddenUnitCache = hiddenUnitCache ?? new CanonicalHiddenUnitOutputCache();
         this.hiddenUnitBuilder = hiddenUnitBuilder ?? new CanonicalHiddenUnitBuilder();
+        this.storageKindResolver = new ModStorageKindResolver(this.fileNameParser);
     }
 
     public async ValueTask<ModSameKeyReconstructionState> InspectAsync(
@@ -52,8 +54,18 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         string? sourcePatchTocPath = null)
     {
         ArgumentNullException.ThrowIfNull(source);
-        var patch = ResolveBasePatchPath(source, modsRootDirectory, sourcePatchTocPath);
         var issues = new List<CoreIssue>();
+        var modDirectory = Path.Combine(modsRootDirectory, source.RelativePath);
+        if (string.IsNullOrWhiteSpace(sourcePatchTocPath)
+            && RebuildTargetScope.IsSectionalSeries(modDirectory, storageKindResolver))
+        {
+            issues.Add(Error(
+                "SectionalModRequiresSectionalRebuild",
+                "分段式（Sectional / VPK）Mod 的根目录保存的是冻结来源，不支持直接原地替换根 Patch；请使用分段重构建修复。",
+                source.Id));
+            return new ModSameKeyReconstructionState(source.Id, null, null, false, 0, 0, 0, 0, 0, issues);
+        }
+        var patch = ResolveBasePatchPath(source, modsRootDirectory, sourcePatchTocPath);
         if (patch is null) issues.Add(Error(
             string.IsNullOrWhiteSpace(sourcePatchTocPath) ? "PatchRequired" : "SourcePatchNotFound",
             string.IsNullOrWhiteSpace(sourcePatchTocPath) ? "Mod 没有 Patch 主文件。" : "指定的来源 Patch 主文件不属于当前 Mod 或不存在。",
@@ -88,6 +100,14 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     {
         ArgumentNullException.ThrowIfNull(source);
         Report(progress, operationId, "InspectEligibility", "正在检查同 ID Canonical 重建资格", 0, 1);
+        if (string.IsNullOrWhiteSpace(sourcePatchTocPath)
+            && RebuildTargetScope.IsSectionalSeries(Path.Combine(modsRootDirectory, source.RelativePath), storageKindResolver))
+        {
+            return Failure([Error(
+                "SectionalModRequiresSectionalRebuild",
+                "分段式（Sectional / VPK）Mod 的根目录保存的是冻结来源，不支持直接原地替换根 Patch；请使用分段重构建修复。",
+                source.Id)]);
+        }
         var patch = ResolveBasePatchPath(source, modsRootDirectory, sourcePatchTocPath);
         if (patch is null)
         {

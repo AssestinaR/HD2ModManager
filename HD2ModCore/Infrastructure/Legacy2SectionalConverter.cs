@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Text.Json;
+using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
+using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 
@@ -134,6 +136,19 @@ public static class Legacy2SectionalConverter
 			var writtenUnitPatches = await WriteUnitPatchesAsync(writer, modDirectory, unitGroup, stagingRoot, unitStage, cancellationToken).ConfigureAwait(false);
 			if (writtenUnitPatches.Count == 0)
 				return Legacy2SectionalOutcome.Failed("写出 unit 组失败：来源里没有任何一个 patch 提供被选中的 unit。", notes);
+
+			await using (var upgradeReader = CoreServices.CreateModInformationReader())
+			{
+				var reconstruction = CoreServices.CreateModSameKeyReconstructionService(context.Paths, upgradeReader);
+				await UpgradeOutdatedStagedUnitPatchesAsync(
+					writtenUnitPatches,
+					stagingRoot,
+					context.GameDataFolder,
+					reconstruction,
+					notes,
+					onStage,
+					cancellationToken).ConfigureAwait(false);
+			}
 
 			// ② 拆 7 槽。输出目录单独给，避免边读边写。
 			onStage?.Invoke("正在按 7 槽拆分…");
@@ -365,6 +380,77 @@ public static class Legacy2SectionalConverter
 		}
 
 		return written;
+	}
+
+	internal static async ValueTask UpgradeOutdatedStagedUnitPatchesAsync(
+		IReadOnlyList<string> stagedUnitPatchPaths,
+		string stagingRoot,
+		string gameDataFolder,
+		IModSameKeyReconstructionService reconstruction,
+		List<string> notes,
+		Action<string>? onStage = null,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(stagedUnitPatchPaths);
+		ArgumentException.ThrowIfNullOrWhiteSpace(stagingRoot);
+		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataFolder);
+		ArgumentNullException.ThrowIfNull(reconstruction);
+		ArgumentNullException.ThrowIfNull(notes);
+
+		var scanner = new HD2ModAdaptation.PatchReconstruction.PatchTocScanner();
+		var probe = new UnitVersionProbe();
+		for (var index = 0; index < stagedUnitPatchPaths.Count; index++)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var stagedPatchPath = stagedUnitPatchPaths[index];
+			if (!File.Exists(stagedPatchPath)) continue;
+
+			var entries = await scanner.ScanEntriesAsync(stagedPatchPath, cancellationToken).ConfigureAwait(false);
+			var analysis = new PatchGroupAnalysis(
+				new PatchGroupInput(stagedPatchPath),
+				[],
+				[],
+				[],
+				DateTimeOffset.UtcNow,
+				"sectional-source-upgrade",
+				PatchAnalysisDepth.Inventory,
+				entries);
+			var report = ModUnitCompatibilityReport.FromEvidence(
+				await probe.ProbeAsync(analysis, cancellationToken).ConfigureAwait(false));
+			if (!report.IsOutdated)
+				continue;
+
+			var fileName = Path.GetFileName(stagedPatchPath);
+			onStage?.Invoke($"正在将过时来源 Unit 升级至当前游戏版本（{fileName}）…");
+			var stageDirectory = Path.GetDirectoryName(stagedPatchPath)
+				?? throw new InvalidDataException($"无法解析暂存目录：{stagedPatchPath}");
+			var relativePath = Path.GetRelativePath(stagingRoot, stageDirectory);
+			var stageNode = new ModNode(
+				ModNodeId.New(),
+				relativePath,
+				new ModNodeMetadata(fileName, null, DateTimeOffset.UtcNow, null),
+				Array.Empty<PatchGroupKey>(),
+				Array.Empty<ModNodeId>());
+			var upgradeDirectory = Path.Combine(stagingRoot, $"unit-upgraded-{index}");
+			var upgraded = await reconstruction.GenerateCandidateAsync(
+				stageNode,
+				stagingRoot,
+				gameDataFolder,
+				upgradeDirectory,
+				cancellationToken,
+				sourcePatchTocPath: stagedPatchPath).ConfigureAwait(false);
+			var upgradedPatchPath = Path.Combine(upgradeDirectory, fileName);
+			if (!upgraded.IsSuccessful || !File.Exists(upgradedPatchPath))
+			{
+				var detail = upgraded.Issues.Count == 0
+					? "不满足同 ID 升级条件"
+					: string.Join("；", upgraded.Issues.Take(3).Select(issue => issue.Message));
+				notes.Add($"来源 {fileName} 未能升级至当前游戏版本（{detail}），保留原版来源继续转换。");
+				continue;
+			}
+
+			MoveAs(upgradedPatchPath, stagedPatchPath);
+		}
 	}
 
 	/// <summary>把一组规划写成一个 patch 文件，返回它的路径（写不出来返回 <c>null</c>）。</summary>

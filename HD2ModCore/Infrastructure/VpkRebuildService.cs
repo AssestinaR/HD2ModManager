@@ -41,6 +41,9 @@ public sealed record VpkRebuildOutcome(
 
 	/// <summary>专属多选（P5）：实际编进去的全部目标的规则种子。</summary>
 	public IReadOnlyList<KitInstance.KitExclusiveSeed> ExclusiveTargets { get; init; } = [];
+
+	/// <summary>编译阶段用户一键关闭多余组件后更新的 <c>disabled</c> 集合。</summary>
+	public IReadOnlyDictionary<string, IReadOnlyCollection<int>>? UpdatedDisabledSections { get; init; }
 }
 
 /// <summary>
@@ -483,6 +486,7 @@ public static class VpkRebuildService
 			var rekeyed = false;
 			KitInstance.KitExclusiveSeed? exclusiveSeed = null;
 			IReadOnlyList<KitInstance.KitExclusiveSeed> exclusiveSeeds = [];
+			IReadOnlyDictionary<string, IReadOnlyCollection<int>>? updatedDisabled = null;
 			string? targetName = null;
 			string? incompleteReason = null;
 			if (!isUnitMod)
@@ -498,6 +502,7 @@ public static class VpkRebuildService
 					stage => onStage?.Invoke(stage), cancellationToken, exclusiveItemId: exclusiveItemId, exclusiveItemIds: exclusiveItemIds).ConfigureAwait(false);
 				exclusiveSeed = compile.Exclusive;
 				exclusiveSeeds = compile.ExclusiveTargets;
+				updatedDisabled = compile.UpdatedDisabledSections;
 				foreach (var warning in compile.Notes) notes.Add(warning);
 				if (!compile.Ok)
 				{
@@ -529,6 +534,7 @@ public static class VpkRebuildService
 				IncompleteReason = incompleteReason,
 				Exclusive = exclusiveSeed,
 				ExclusiveTargets = exclusiveSeeds,
+				UpdatedDisabledSections = updatedDisabled,
 			};
 		}
 		catch (OperationCanceledException)

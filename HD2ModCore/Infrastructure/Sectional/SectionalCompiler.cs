@@ -65,6 +65,11 @@ public sealed record SectionalCompileResult(
 
 	/// <summary>专属切换：合并出来的模型份数（来源集合相同的合并只算一份）。</summary>
 	public int MergedModelCount { get; init; }
+
+	/// <summary>
+	/// 当编译期间用户通过 128 MiB 超限弹窗一键关闭了多余组件时，返回合并后的最新 <c>disabled</c> 集合；未改动时为 <c>null</c>。
+	/// </summary>
+	public IReadOnlyDictionary<string, IReadOnlyCollection<int>>? UpdatedDisabledSections { get; init; }
 }
 
 /// <summary>

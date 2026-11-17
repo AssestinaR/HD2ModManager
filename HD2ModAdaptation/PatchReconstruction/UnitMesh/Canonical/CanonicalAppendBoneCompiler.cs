@@ -195,11 +195,16 @@ public sealed class CanonicalAppendBoneCompiler
 
     private static IReadOnlyList<UnitVertexComponentValue> RewriteIndices(IReadOnlyList<UnitVertexComponentValue> components, BoneIndexRewriteContext context)
     {
-        return components.Select(component => component.Type != 6 ? component : component with
-        {
-            RawData = Array.Empty<byte>(),
-            UIntValues = component.UIntValues.Select(context.Resolve).ToArray()
-        }).ToArray();
+        return components
+            .Where(component => component.Type != 6
+                || component.Index == 0
+                || components.Any(weight => weight.Type == 7 && weight.Index == component.Index))
+            .Select(component => component.Type != 6 ? component : component with
+            {
+                RawData = Array.Empty<byte>(),
+                UIntValues = component.UIntValues.Select(context.Resolve).ToArray()
+            })
+            .ToArray();
     }
 
     private sealed class BoneIndexRewriteContext

@@ -91,6 +91,72 @@ public sealed class CanonicalTransformAndBoneRebuilderTests
 		Assert.Equal(new uint[] { 0 }, result.BoneInfo!.RealIndices);
 	}
 
+	[Fact]
+	public void BoneRebuilder_IsolatesSharedSeamVertexAcrossTargetMaterialSections()
+	{
+		uint[] hashes = [100, 200, 300];
+		var sourceBoneInfo = new UnitBoneInfo(0, 0, 3, 0, 0, 0, [0, 1, 2], [
+			new UnitBoneRemap(0, 0, [0, 1, 2]),
+			new UnitBoneRemap(1, 0, [0, 1, 2])
+		]);
+		var sourceMeshInfo = new UnitMeshInfo(0, 64, 1, 0, 0, 0, 1, 0, 2, 0, UnitMeshSemanticInfo.Empty(0, 0), [10, 20], [
+			new(128, 0, 10, 0, 3, 0, 0, 0),
+			new(152, 1, 20, 3, 3, 0, 0, 0)
+		]);
+		var targetMeshInfo = new UnitMeshInfo(0, 64, 1, 0, 0, 0, 1, 0, 2, 0, UnitMeshSemanticInfo.Empty(0, 0), [1000, 2000], [
+			new(128, 0, 1000, 0, 3, 0, 0, 0),
+			new(152, 1, 2000, 3, 3, 0, 0, 0)
+		]);
+		var source = Model(Matrix4x4.Identity, hashes, sourceBoneInfo) with
+		{
+			Meshes = [sourceMeshInfo],
+			Materials = [new(10, 0x111UL), new(20, 0x222UL)]
+		};
+		var target = Model(Matrix4x4.Identity, hashes, new UnitBoneInfo(0, 0, 0, 0, 0, 0, [], [])) with
+		{
+			Meshes = [targetMeshInfo],
+			Materials = [new(1000, 0xaaaUL), new(2000, 0xbbbUL)]
+		};
+
+		// Vertex 2 (bone hash 300) is shared by both sections:
+		// Section 0 uses hashes {100, 200, 300} (fakeCount=3, hash 300 -> fake 2),
+		// Section 1 uses only hash {300} (fakeCount=1, hash 300 -> fake 0).
+		var vertices = new[]
+		{
+			SkinnedVertex(0, 0),
+			SkinnedVertex(1, 1),
+			SkinnedVertex(2, 2)
+		};
+		var sourceRaw = new UnitRawMeshData(0, 1, 0, 0,
+			[new(0, 10, [new(0, 1, 2)]), new(1, 20, [new(2, 2, 2)])],
+			[new(0, 1, 2), new(2, 2, 2)],
+			vertices);
+		var targetRaw = new UnitRawMeshData(0, 1, 0, 0,
+			[new(0, 1000, [new(0, 0, 0)]), new(1, 2000, [new(0, 0, 0)])],
+			[new(0, 0, 0), new(0, 0, 0)],
+			[SkinnedVertex(0, 0)]);
+
+		var rebuilt = new CanonicalBoneRebuilder().TryRebuild(source, sourceRaw, target, targetRaw);
+		Assert.True(rebuilt.IsValid, string.Join("; ", rebuilt.Diagnostics.Select(item => item.Message)));
+
+		var compiled = new CanonicalLodBonePaletteCompiler().TryCompile(
+			target,
+			0,
+			[new CanonicalLodBoneInput(rebuilt.Mesh!, rebuilt.BoneInfo!)]);
+
+		Assert.True(compiled.IsValid, string.Join("; ", compiled.Diagnostics.Select(item => item.Message)));
+		var section1VertexIndex = compiled.Meshes[0].Sections[1].Triangles[0].A;
+		var section1Fake = compiled.Meshes[0].Vertices[(int)section1VertexIndex].Components.Single(c => c.Type == 6).UIntValues[0];
+		var unifiedReal = compiled.BoneInfo!.RealIndices[(int)compiled.BoneInfo.Remaps[1].FakeIndices[(int)section1Fake]];
+		Assert.Equal(300u, target.TransformNameHashes[(int)unifiedReal]);
+	}
+
+	private static UnitRawVertexRecord SkinnedVertex(uint index, uint fakeIndex)
+		=> new(index, [], [
+			new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, [], [fakeIndex, 0, 0, 0], []),
+			new UnitVertexComponentValue(7, "bone_weight", 35, "vec4_half", 0, [1, 0, 0, 0], [], [])
+		]);
+
 	private static UnitRawMeshData SkinnedRaw(int meshIndex, uint fakeIndex)
 	{
 		var vertex = new UnitRawVertexRecord(0, [], [new UnitVertexComponentValue(6, "bone_index", 0, "vec4_uint8", 0, [], [fakeIndex, 0, 0, 0], [])]);

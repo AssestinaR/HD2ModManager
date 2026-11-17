@@ -1,3 +1,5 @@
+using HD2ModCore.Infrastructure.Sectional;
+
 namespace HD2ModCore.Infrastructure;
 
 /// <summary>
@@ -23,4 +25,15 @@ public sealed record VpkHostContext(string? GameDataFolder, StoragePaths Paths)
 	/// 只对低污染 + 头身合并的素体有意义。
 	/// </summary>
 	public IReadOnlyList<uint> NpcItemIds { get; init; } = [];
+
+	/// <summary>Mod 的展示名（可选）；缺省时由目录或 settings.json 推导。</summary>
+	public string? ModDisplayName { get; init; }
+
+	/// <summary>
+	/// 合并几何超过游戏 D3D12 单流 128 MiB 上限时的交互处置回调（GUI 挂载弹窗，CLI 留空安全兜底）。
+	/// </summary>
+	public SectionalMergeOverflowHandler? OnMergeOverflow { get; init; }
+
+	/// <summary>仅供内部测试替换几何合并器，生产代码恒为 <c>null</c>。</summary>
+	internal Func<string, SectionalUnitMergeSpec, CancellationToken, Task<SectionalMergedUnit>>? MergeUnitOverride { get; init; }
 }

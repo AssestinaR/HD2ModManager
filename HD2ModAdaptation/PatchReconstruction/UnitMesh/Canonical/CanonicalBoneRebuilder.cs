@@ -154,28 +154,27 @@ public sealed class CanonicalBoneRebuilder
 				diagnostics.Add(new("MissingSourceVertexMaterial", $"Source vertex {vertexIndex} is used by geometry but has no material assignment."));
 				continue;
 			}
-			var boneComponent = mesh.Vertices[(int)vertexIndex].Components.FirstOrDefault(component => component.Type == 6);
-			var indices = boneComponent?.UIntValues ?? Array.Empty<uint>();
-			foreach (var fake in indices)
+			foreach (var boneComponent in mesh.Vertices[(int)vertexIndex].Components.Where(component => component.Type == 6))
 			{
-				var remap = info.Remaps.FirstOrDefault(candidate => candidate.MaterialIndex == materialIndex);
-				if (remap is null || fake >= remap.FakeIndices.Count || remap.FakeIndices[(int)fake] >= realHashes.Count)
+				foreach (var fake in boneComponent.UIntValues)
 				{
-					var reason = remap is null
-						? $"no remap for material {materialIndex}"
-						: fake >= remap.FakeIndices.Count
-							? $"fake index {fake} exceeds remap length {remap.FakeIndices.Count}"
-							: $"remap value {remap.FakeIndices[(int)fake]} exceeds RealIndices length {realHashes.Count}";
-					var remapSummary = string.Join(',', info.Remaps.Select(item => $"{item.MaterialIndex}:{item.FakeIndices.Count}"));
-					var componentDescription = boneComponent is null
-						? "component=missing"
-						: $"component=format {boneComponent.Format} ({boneComponent.FormatName}), index {boneComponent.Index}, values=[{string.Join(',', boneComponent.UIntValues)}]";
-					var message = $"Source mesh {mesh.MeshInfoIndex}, LOD {mesh.LodIndex}, vertex {vertexIndex}, material {materialIndex}, fake {fake}: {reason}; {componentDescription}; remaps={remapSummary}.";
-					if (reported.Add(message))
-						diagnostics.Add(new("InvalidSourceBoneRemap", message));
-					continue;
+					var remap = info.Remaps.FirstOrDefault(candidate => candidate.MaterialIndex == materialIndex);
+					if (remap is null || fake >= remap.FakeIndices.Count || remap.FakeIndices[(int)fake] >= realHashes.Count)
+					{
+						var reason = remap is null
+							? $"no remap for material {materialIndex}"
+							: fake >= remap.FakeIndices.Count
+								? $"fake index {fake} exceeds remap length {remap.FakeIndices.Count}"
+								: $"remap value {remap.FakeIndices[(int)fake]} exceeds RealIndices length {realHashes.Count}";
+						var remapSummary = string.Join(',', info.Remaps.Select(item => $"{item.MaterialIndex}:{item.FakeIndices.Count}"));
+						var componentDescription = $"component=format {boneComponent.Format} ({boneComponent.FormatName}), index {boneComponent.Index}, values=[{string.Join(',', boneComponent.UIntValues)}]";
+						var message = $"Source mesh {mesh.MeshInfoIndex}, LOD {mesh.LodIndex}, vertex {vertexIndex}, material {materialIndex}, fake {fake}: {reason}; {componentDescription}; remaps={remapSummary}.";
+						if (reported.Add(message))
+							diagnostics.Add(new("InvalidSourceBoneRemap", message));
+						continue;
+					}
+					yield return realHashes[(int)remap.FakeIndices[(int)fake]];
 				}
-				yield return realHashes[(int)remap.FakeIndices[(int)fake]];
 			}
 		}
 	}
@@ -239,7 +238,9 @@ public sealed class CanonicalBoneRebuilder
 		var materialLayout = CanonicalFinalMaterialLayout.TryCreate(targetMesh);
 		diagnostics.AddRange(materialLayout.Diagnostics);
 		if (!materialLayout.IsValid) return sourceMesh;
-		var byKey = new Dictionary<(uint Vertex, uint Material), uint>();
+		// Fake bone indices are encoded per target material remap, so seam vertices shared
+		// across sections must be isolated by targetMaterial as well as sourceMaterial.
+		var byKey = new Dictionary<(uint Vertex, uint SourceMaterial, uint TargetMaterial), uint>();
 		var vertices = new List<UnitRawVertexRecord>();
 		var sections = targetMesh.Sections.Select((section, index) => new UnitRawMeshSectionData(materialLayout.GetMaterialOrdinal(index), section.MaterialSlotId, Array.Empty<UnitTriangleIndices>())).ToArray();
 		foreach (var assignment in layout.Assignments)
@@ -256,7 +257,7 @@ public sealed class CanonicalBoneRebuilder
 					diagnostics.Add(new("MissingSourceVertexMaterial", $"Source vertex {index} has no material assignment while rewriting bone indices."));
 					return 0;
 				}
-				var key = (index, sourceMaterial);
+				var key = (index, sourceMaterial, targetMaterial);
 				if (byKey.TryGetValue(key, out var existing)) return existing;
 				var source = sourceMesh.Vertices[(int)index];
 				var components = source.Components.Select(component => component.Type != 6 ? component : component with { UIntValues = component.UIntValues.Select(fake => ResolveFake(fake, sourceMaterial, sourceInfo, sourceHashes, targetHashes, realIndices, targetRemap, diagnostics)).ToArray(), RawData = Array.Empty<byte>() }).ToArray();

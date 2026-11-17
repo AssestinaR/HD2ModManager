@@ -140,6 +140,8 @@ internal static class SectionalUnitMerger
 			allowTargetOwnedBones: true);
 		if (!appended.IsValid || appended.Edit is null)
 		{
+			if (TryCreateOverflowException(spec.SourceFileIds, appended.Diagnostics) is { } overflow)
+				throw overflow;
 			throw new InvalidDataException(
 				"合并几何失败：" + string.Join("；", appended.Diagnostics.Select(item => $"{item.Code} {item.Message}")));
 		}
@@ -173,6 +175,31 @@ internal static class SectionalUnitMerger
 			.ThenByDescending(index => units[index].TransformNameHashes.Count(hash => !avatarHashes.Contains(hash)))
 			.ThenBy(index => index)
 			.First();
+
+	internal static SectionalMergeBufferOverflowException? TryCreateOverflowException(
+		IReadOnlyList<string> sourceFileIds,
+		IReadOnlyList<CanonicalPlanDiagnostic> diagnostics)
+	{
+		foreach (var diagnostic in diagnostics)
+		{
+			if (!CanonicalUnitRebuilder.TryParseStreamBufferLimitDiagnostic(
+					diagnostic, out var streamIndex, out var bufferKind, out var actualBytes, out var limitBytes, out var stride))
+			{
+				continue;
+			}
+
+			return new SectionalMergeBufferOverflowException(
+				sourceFileIds,
+				streamIndex,
+				bufferKind,
+				actualBytes,
+				limitBytes,
+				stride,
+				$"合并后的单流缓冲区达到 {SectionalMergeOverflowAnalyzer.FormatMiB(actualBytes)}（{actualBytes} 字节），超过游戏 D3D12 单块上限 {SectionalMergeOverflowAnalyzer.FormatMiB(limitBytes)}。");
+		}
+
+		return null;
+	}
 
 	/// <summary>与旧版拆件、跨甲合并同一个命名空间算法：不同来源各自的材质槽不会被当成同一个。</summary>
 	private static ulong MaterialNamespace(ulong unitFileId)
