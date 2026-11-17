@@ -11,6 +11,7 @@ using System.Windows.Media;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.Diagnostics;
 using HD2ModManager.Services;
 using HD2ModManager.Controls.Actions;
 using HD2ModManager.Controls.EmptyState;
@@ -210,8 +211,21 @@ namespace HD2ModManager.ViewModels
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenMessagePanel();
         }
 
-        private static void LaunchGame()
-            => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("steam://run/553850") { UseShellExecute = true });
+        private void LaunchGame()
+        {
+            var profile = _profiles.ActiveProfile;
+            using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.LaunchGame, profile: profile?.Id.Value, revision: profile?.Revision);
+            try
+            {
+                using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("steam://run/553850") { UseShellExecute = true });
+                diagnostic.Finish(DiagnosticResult.Completed, "SteamLaunchRequested");
+            }
+            catch (Exception exception)
+            {
+                diagnostic.Finish(DiagnosticResult.Failed, exception: exception);
+                throw;
+            }
+        }
 
         private async Task RepairOutdatedModsAsync()
         {
@@ -1586,7 +1600,7 @@ namespace HD2ModManager.ViewModels
     /// <summary>设置页「物理模式」下拉框的一项。</summary>
     public sealed record PhysicsModeOption(PhysicsMode Value, string DisplayName, string Description);
 
-    public class SettingsPageViewModel : PageViewModel
+    public partial class SettingsPageViewModel : PageViewModel
     {
 		private readonly ProfileService _profiles;
 		private readonly ModLibraryService _library;
@@ -1926,6 +1940,8 @@ namespace HD2ModManager.ViewModels
 
         public override void Dispose()
         {
+            _disposedForDiagnostics = true;
+            _diagnosticExport?.Cancel();
             AppUpdate.Dispose();
             base.Dispose();
         }
@@ -1938,6 +1954,9 @@ namespace HD2ModManager.ViewModels
 			_library = library;
             _bottomBar = bottomBar ?? throw new ArgumentNullException(nameof(bottomBar));
             _backgroundTasks = backgroundTasks;
+            ExportDiagnosticsCommand = new AsyncRelayCommand(_ => ExportDiagnosticsAsync(), _ => _diagnosticExport is null);
+            CancelDiagnosticExportCommand = new RelayCommand(() => _diagnosticExport?.Cancel());
+            OpenDiagnosticFolderCommand = new RelayCommand(_ => OpenDiagnosticFolder(), _ => _diagnosticFolder is not null);
 			_modLibraryFolderCandidate = SettingsService.GetModLibraryFolder();
 			_modLibrarySwitchBar = new ModLibrarySwitchBottomBarViewModel(RestartAndSwitchModLibrary, CancelModLibrarySwitch);
             OpenModFolderCommand = new RelayCommand(() => OpenFolder(ModLibraryFolder));
@@ -2230,6 +2249,8 @@ namespace HD2ModManager.ViewModels
                 var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(_paths)
                     .GetArchiveHashesJsonAsync(cancellationToken);
                 var status = await index.GetIndexStatusAsync(gameData, archiveHashes, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                _lastDiagnosticIndexStatus = status;
                 SettingsService.SetLastGameDataIndexCheckUtc(DateTime.UtcNow);
                 OnPropertyChanged(nameof(GameDataIndexLastCheckText));
                 AssetIndexState = ToDisplayState(status.State);
@@ -2449,7 +2470,7 @@ namespace HD2ModManager.ViewModels
         {
             if (string.IsNullOrWhiteSpace(folder)) return;
             if (!System.IO.Directory.Exists(folder)) System.IO.Directory.CreateDirectory(folder);
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = folder, UseShellExecute = true });
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = folder, UseShellExecute = true });
         }
 
         private void OpenGameDataFolder()

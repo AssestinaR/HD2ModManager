@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using HD2ModCore.Infrastructure.Diagnostics;
 
 namespace HD2ModManager.Services
 {
@@ -165,6 +166,7 @@ namespace HD2ModManager.Services
         public void MarkRunning(string stage)
         {
             if (!IsActive) return;
+            if (Status == BackgroundTaskStatus.Queued) RecordDiagnosticTransition(DiagnosticResult.Started);
             IsAcknowledged = false;
             IsUnread = false;
             IsFocusDismissed = false;
@@ -211,6 +213,7 @@ namespace HD2ModManager.Services
         public void MarkCompleted()
         {
             if (!IsActive) return;
+            RecordDiagnosticTransition(DiagnosticResult.Completed);
             Status = BackgroundTaskStatus.Completed;
             FinishedAt = DateTime.UtcNow;
             Progress = 1d;
@@ -225,6 +228,7 @@ namespace HD2ModManager.Services
         public void MarkFailed(string error)
         {
             if (!IsActive) return;
+            RecordDiagnosticTransition(DiagnosticResult.Failed);
             IsAcknowledged = false;
             IsUnread = true;
             IsFocusDismissed = false;
@@ -242,6 +246,7 @@ namespace HD2ModManager.Services
         public void MarkCanceled()
         {
             if (!IsActive) return;
+            RecordDiagnosticTransition(DiagnosticResult.Canceled);
             Status = BackgroundTaskStatus.Canceled;
             FinishedAt = DateTime.UtcNow;
             Stage = "已取消";
@@ -250,6 +255,20 @@ namespace HD2ModManager.Services
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));
             OnPropertyChanged(nameof(CanRetry));
+        }
+
+        private void RecordDiagnosticTransition(DiagnosticResult result)
+        {
+            var action = Kind switch
+            {
+                BackgroundTaskKind.BuildAssetIndex => DiagnosticAction.BuildAssetIndex,
+                BackgroundTaskKind.UpdateAssetMetadata => DiagnosticAction.UpdateAssets,
+                BackgroundTaskKind.RebuildVpk when Origin != "导入" => DiagnosticAction.RebuildVpk,
+                _ => (DiagnosticAction?)null,
+            };
+            if (action is not { } value || !Guid.TryParse(Id, out var id)) return;
+            DiagnosticOperations.Journal.Record(value, result, operation: id,
+                durationMs: result != DiagnosticResult.Started && StartedAt is { } start ? (long)(DateTime.UtcNow - start).TotalMilliseconds : null);
         }
 
         public void Cancel()

@@ -1,5 +1,8 @@
+using System;
 using System.Globalization;
+using System.Threading;
 using System.Windows;
+using HD2ModCore.Infrastructure.Diagnostics;
 using HD2ModManager.Services;
 
 namespace HD2ModManager
@@ -9,8 +12,12 @@ namespace HD2ModManager
     /// </summary>
     public partial class App : Application
     {
+        private Guid _diagnosticSessionOperation;
+
         protected override void OnStartup(StartupEventArgs e)
         {
+            _diagnosticSessionOperation = DiagnosticOperations.Journal.Record(DiagnosticAction.ManagerSession, DiagnosticResult.Started, DiagnosticTrigger.Automatic);
+            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
             // 启动时把设置里的三项 lua 相关项同步到静态字段：部署阶段读静态字段，不读磁盘。
             // 必须**三项都同步**——只同步护甲映射模式的话，物理模式会停在默认的「关闭」，
             // 于是设置页显示"已开启"、部署却不带物理运行时（2026-11-01 实机踩过：
@@ -22,6 +29,7 @@ namespace HD2ModManager
             ApplyLocalization();
             DispatcherUnhandledException += (_, args) =>
             {
+                RecordUnhandledException(args.Exception);
                 LogService.Error($"Unhandled UI exception: {args.Exception}");
                 MessageBox.Show($"管理器遇到未处理错误，详情已写入 logs：{args.Exception.Message}", "HD2 Mod Manager", MessageBoxButton.OK, MessageBoxImage.Error);
                 args.Handled = true;
@@ -61,10 +69,34 @@ namespace HD2ModManager
 
         protected override void OnExit(ExitEventArgs e)
         {
+            AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
+            DiagnosticOperations.Journal.Record(DiagnosticAction.ManagerSession, DiagnosticResult.Completed, DiagnosticTrigger.Automatic, _diagnosticSessionOperation);
+            FlushDiagnosticJournal();
             UiPerformanceDiagnostics.Stop();
             AppUpdateService.Instance?.Dispose();
             SettingsService.FlushAsync().GetAwaiter().GetResult();
             base.OnExit(e);
+        }
+
+        private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            if (e.ExceptionObject is Exception exception)
+            {
+                RecordUnhandledException(exception);
+                LogService.Error($"Unhandled process exception: {exception}");
+            }
+            if (e.IsTerminating) FlushDiagnosticJournal();
+        }
+
+        private static void RecordUnhandledException(Exception exception)
+            => DiagnosticOperations.Journal.Record(DiagnosticAction.ManagerException, DiagnosticResult.Failed,
+                code: exception.GetType().Name, errorNumber: exception.HResult);
+
+        private static void FlushDiagnosticJournal()
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            try { DiagnosticOperations.Journal.FlushAsync(timeout.Token).GetAwaiter().GetResult(); }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
         }
 
         private static void ApplyLocalization()

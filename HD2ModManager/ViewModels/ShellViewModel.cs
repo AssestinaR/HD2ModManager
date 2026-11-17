@@ -9,6 +9,7 @@ using System.Windows.Media;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.Diagnostics;
 using HD2ModManager.Controls.Actions;
 using HD2ModManager.Enums;
 using HD2ModManager.Services;
@@ -39,6 +40,8 @@ namespace HD2ModManager.ViewModels
         private readonly NotificationService _notificationService;
         private readonly MessageCenterService _messageCenter;
         private readonly IProfileDeploymentCoordinator _deploymentCoordinator;
+        private Guid? _diagnosticDeploymentOperation;
+        private DiagnosticAction _diagnosticDeploymentAction;
         private BackgroundTaskItem? _deploymentTask;
 		private System.Windows.Threading.DispatcherTimer? _deploymentBufferTimer;
         private readonly SelectionCoordinator _selection = new();
@@ -435,7 +438,7 @@ namespace HD2ModManager.ViewModels
                     if (string.IsNullOrWhiteSpace(SettingsService.GetGameDataFolder()))
                         SettingsService.TryDetectAndSetGameDataFolder();
                     await _profileService.CreateNewAsync(defaultProfileName, cancellationToken).ConfigureAwait(false);
-                    await _profileService.ActivateSelectedAsync(cancellationToken).ConfigureAwait(false);
+                    await _profileService.ActivateSelectedAsync(cancellationToken, isAutomatic: true).ConfigureAwait(false);
                     LogService.Info($"首次启动已创建并启用默认配置：{defaultProfileName}。");
                 }
                 await RunStartupChecksAsync(configDir, cancellationToken).ConfigureAwait(false);
@@ -1143,6 +1146,11 @@ namespace HD2ModManager.ViewModels
                 ImportTaskItem? item;
                 while ((item = _importQueue.DequeueNextQueued()) != null)
                 {
+                    var inputType = Path.GetExtension(item.Path).ToLowerInvariant() switch
+                    {
+                        ".vpk" => "Vpk", ".zip" or ".7z" or ".rar" => "Archive", ".patch" => "Patch", _ => "Other",
+                    };
+                    using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.Import, code: inputType);
                     var task = _backgroundTasks.Enqueue(
                         BackgroundTaskKind.Import,
                         $"导入 {System.IO.Path.GetFileName(item.Path)}",
@@ -1171,6 +1179,8 @@ namespace HD2ModManager.ViewModels
                             task.CancellationToken,
                             notifyLibraryChanged: false,
                             refreshDerivedData: false);
+                        diagnostic.Finish(created.Count == 0 ? DiagnosticResult.Failed : DiagnosticResult.Completed,
+                            code: created.Count == 0 ? "NoImportableMod" : null, count: created.Count);
                         if (created.Count == 0)
                         {
                             // 一个 Mod 都没建出来时，任务条不能只写"完成"——用户会以为导入成功了。
@@ -1204,7 +1214,7 @@ namespace HD2ModManager.ViewModels
                                 .Where(target => target is not null)
                                 .Select(target => target!)
                                 .ToArray();
-                            _ = RunImportRebuildAsync(rebuildTargets);
+                            _ = RunImportRebuildAsync(rebuildTargets, diagnostic.Id);
                         }
                         foreach (var nodeId in import.LastAffectedNodeIds)
                             affectedNodeIds.Add(nodeId);
@@ -1225,11 +1235,13 @@ namespace HD2ModManager.ViewModels
                     }
                     catch (OperationCanceledException)
                     {
+                        diagnostic.Finish(DiagnosticResult.Canceled);
                         _importQueue.MarkFailed(item, "任务已取消");
                         task.MarkCanceled();
                     }
                     catch (Exception ex)
                     {
+                        diagnostic.Finish(DiagnosticResult.Failed, exception: ex);
                         _importQueue.MarkFailed(item, ex.Message);
                         task.MarkFailed(ex.Message);
                         HD2ModManager.Views.AppDialog.Show($"导入失败: {item.Path}\n{ex.Message}", "Import", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
@@ -1450,11 +1462,13 @@ namespace HD2ModManager.ViewModels
 
         private void QueueActiveProfileDeployment()
         {
-            if (_profileService.ActiveProfile is null)
+            if (_profileService.ActiveProfile is not { } profile)
             {
                 _notificationService.Show("当前没有活动配置。", NotificationLevel.Info, TimeSpan.FromSeconds(4));
                 return;
             }
+            DiagnosticOperations.Journal.Record(DiagnosticAction.Deploy, DiagnosticResult.Requested, DiagnosticTrigger.User,
+                profile: profile.Id.Value, revision: profile.Revision);
             _ = FlushActiveProfileDeploymentAsync();
             _notificationService.Show("已请求立即部署最新活动配置。", NotificationLevel.Info, TimeSpan.FromSeconds(4));
         }
@@ -1485,6 +1499,8 @@ namespace HD2ModManager.ViewModels
                 _ = dispatcher.InvokeAsync(() => OnDeploymentStatusChanged(sender, status));
                 return;
             }
+
+            RecordDeploymentDiagnostic(status);
 
             switch (status.Stage)
             {
@@ -1564,9 +1580,36 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        private void RecordDeploymentDiagnostic(ProfileDeploymentStatus status)
+        {
+            var result = status.Stage switch
+            {
+                ProfileDeploymentStage.WaitingForStableState => DiagnosticResult.Waiting,
+                ProfileDeploymentStage.Deploying or ProfileDeploymentStage.Deactivating => DiagnosticResult.Started,
+                ProfileDeploymentStage.Completed => DiagnosticResult.Completed,
+                ProfileDeploymentStage.Failed => DiagnosticResult.Failed,
+                ProfileDeploymentStage.Canceled => DiagnosticResult.Canceled,
+                _ => (DiagnosticResult?)null,
+            };
+            if (result is null) return;
+            if (_diagnosticDeploymentOperation is null || status.Stage == ProfileDeploymentStage.Deactivating)
+            {
+                _diagnosticDeploymentOperation = Guid.NewGuid();
+                _diagnosticDeploymentAction = status.Stage == ProfileDeploymentStage.Deactivating ? DiagnosticAction.DeactivateProfile : DiagnosticAction.Deploy;
+            }
+            var code = status.ApplyResult?.Issues.FirstOrDefault(issue => issue.Severity == CoreIssueSeverity.Error)?.Code;
+            if (code is null && status is { Stage: ProfileDeploymentStage.Failed, Message: "未设置游戏数据目录。" }) code = "GameDataNotConfigured";
+            DiagnosticOperations.Journal.Record(_diagnosticDeploymentAction, result.Value, operation: _diagnosticDeploymentOperation,
+                profile: status.ProfileId?.Value, revision: status.TargetRevision,
+                code: code ?? status.Stage.ToString(),
+                count: status.ApplyResult?.Issues.Count);
+            if (result is DiagnosticResult.Completed or DiagnosticResult.Failed or DiagnosticResult.Canceled)
+                _diagnosticDeploymentOperation = null;
+        }
+
         private void StartGame()
         {
-            Process.Start(new ProcessStartInfo("steam://rungameid/553850")
+            using var process = Process.Start(new ProcessStartInfo("steam://rungameid/553850")
             {
                 UseShellExecute = true,
             });
@@ -1696,7 +1739,10 @@ namespace HD2ModManager.ViewModels
 
 		private async Task LaunchGameAsync()
 		{
-			if (_profileService.ActiveProfile is not null)
+			var profile = _profileService.ActiveProfile;
+			using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.LaunchGame, profile: profile?.Id.Value,
+				revision: profile?.Revision, cancellationToken: _lifetimeCancellation.Token);
+			if (profile is not null)
 			{
 				ProfileDeploymentStatus status;
                     try
@@ -1705,18 +1751,29 @@ namespace HD2ModManager.ViewModels
 				}
 				catch (Exception exception)
 				{
+					diagnostic.Finish(exception is OperationCanceledException ? DiagnosticResult.Canceled : DiagnosticResult.Failed, exception: exception);
 					_notificationService.Show($"无法在启动前完成部署：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
 					return;
 				}
 
 				if (status.Stage != ProfileDeploymentStage.Completed)
 				{
+					diagnostic.Finish(status.Stage == ProfileDeploymentStage.Canceled ? DiagnosticResult.Canceled : DiagnosticResult.Failed, "PreLaunchDeployment");
 					_notificationService.Show(status.Message ?? "启动前部署失败，未启动游戏。", NotificationLevel.Error, TimeSpan.FromSeconds(8));
 					return;
 				}
 			}
 
-			StartGame();
+			try
+			{
+				StartGame();
+				diagnostic.Finish(DiagnosticResult.Completed, "SteamLaunchRequested");
+			}
+			catch (Exception exception)
+			{
+				diagnostic.Finish(DiagnosticResult.Failed, exception: exception);
+				throw;
+			}
 		}
 
 		private void StartDeploymentBufferTimer()
@@ -2405,7 +2462,10 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
                 WorkspacePageType.Profile => CreateProfilePage(),
                 WorkspacePageType.Library => CreateLibraryPage(),
-                WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _bottomBar, _backgroundTasks),
+                WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _bottomBar, _backgroundTasks)
+                {
+                    DiagnosticDeploymentStatus = () => _deploymentCoordinator.Status,
+                },
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks, _selection),
                 WorkspacePageType.AdvancedModDetails => new AdvancedModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService, _derivedState.InformationCenter),
@@ -2602,9 +2662,11 @@ namespace HD2ModManager.ViewModels
         /// 用户在底栏上再点一次"重构"不该是必经之路。
         /// </para>
         /// </summary>
-        private async Task RunImportRebuildAsync(IReadOnlyList<VpkBulkRebuildTarget> targets)
+        private async Task RunImportRebuildAsync(IReadOnlyList<VpkBulkRebuildTarget> targets, Guid? importOperation = null)
         {
             if (targets.Count == 0) return;
+            using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.RebuildVpk,
+                importOperation is null ? DiagnosticTrigger.User : DiagnosticTrigger.Automatic, parent: importOperation);
 
             var concurrency = VpkBulkRebuildService.DefaultConcurrency;
             var startedUtc = DateTime.UtcNow;
@@ -2643,6 +2705,8 @@ namespace HD2ModManager.ViewModels
                     .Where(entry => !entry.Ok && entry.Outcome is not null)
                     .Select(entry => $"{entry.Target.Name}：{entry.Error}")
                     .ToArray();
+                diagnostic.Finish(failures.Length == 0 ? DiagnosticResult.Completed : DiagnosticResult.Failed,
+                    code: failures.Length == 0 ? null : "VpkConversionFailed", count: failures.Length);
                 var summary = result.Summary + "。" + (result.SucceededCount != 0 ? "重启游戏后生效。" : string.Empty);
                 if (result.SucceededCount == 0 && failures.Length != 0) task.MarkFailed(summary + " " + failures[0]);
                 else task.MarkCompleted();
@@ -2654,11 +2718,13 @@ namespace HD2ModManager.ViewModels
             }
             catch (OperationCanceledException)
             {
+                diagnostic.Finish(DiagnosticResult.Canceled);
                 task.MarkCanceled();
             }
             catch (Exception exception) when (exception is IOException or InvalidOperationException
                 or InvalidDataException or UnauthorizedAccessException)
             {
+                diagnostic.Finish(DiagnosticResult.Failed, exception: exception);
                 task.MarkFailed(exception.Message);
                 RefreshOnUiThread(() => _notificationService.Show(
                     "导入后自动转换失败：" + exception.Message, NotificationLevel.Error, TimeSpan.FromSeconds(20)));

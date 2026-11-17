@@ -10,6 +10,7 @@ using HD2ModCore.Domain;
 using HD2ModCore.Application;
 using HD2ModCore.Decoration;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.Diagnostics;
 using HD2ModManager.Models;
 
 namespace HD2ModManager.Services
@@ -362,7 +363,9 @@ namespace HD2ModManager.Services
             if (option?.IsOption != true || !option.HostModGuids.Any(host => SameModGuid(host, hostId))) return "当前主体不支持该选项。";
             var storedHost = option.HostModGuids.First(host => SameModGuid(host, hostId));
             var enabled = !IsOptionEnabledForHost(optionId, storedHost);
+            using var diagnostic = BeginOptionChange(optionId, cancellationToken);
             await _optionActivations.SetEnabledAsync(optionId, storedHost, enabled, cancellationToken).ConfigureAwait(false);
+            diagnostic.Finish(DiagnosticResult.Completed, enabled ? "Enabled" : "Disabled", count: 1);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             OptionActivationChanged?.Invoke(this, EventArgs.Empty);
             return enabled ? "已为当前主体启用选项。" : "已为当前主体禁用选项。";
@@ -378,7 +381,9 @@ namespace HD2ModManager.Services
             if (available.Count == 0) return "无可用主体。";
             var enabled = _optionActivations.GetEnabledHosts(optionId);
             var enable = !available.All(enabled.Contains);
+            using var diagnostic = BeginOptionChange(optionId, cancellationToken);
             await _optionActivations.SetEnabledForHostsAsync(optionId, available, enable, cancellationToken).ConfigureAwait(false);
+            diagnostic.Finish(DiagnosticResult.Completed, enable ? "Enabled" : "Disabled", count: available.Count);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             OptionActivationChanged?.Invoke(this, EventArgs.Empty);
             return enable ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。";
@@ -390,11 +395,17 @@ namespace HD2ModManager.Services
             if (option?.IsOption != true) return "当前不是选项 Mod。";
             var available = option.HostModGuids.Where(host => All().Any(mod => IsOptionHost(mod) && SameModGuid(mod.Guid, host))).ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (available.Count == 0) return "无可用主体。";
+            using var diagnostic = BeginOptionChange(optionId, cancellationToken);
             await _optionActivations.SetEnabledForHostsAsync(optionId, available, enabled, cancellationToken).ConfigureAwait(false);
+            diagnostic.Finish(DiagnosticResult.Completed, enabled ? "Enabled" : "Disabled", count: available.Count);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             OptionActivationChanged?.Invoke(this, EventArgs.Empty);
             return enabled ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。";
         }
+
+        private static DiagnosticOperations.Operation BeginOptionChange(string optionId, CancellationToken cancellationToken)
+            => DiagnosticOperations.Begin(DiagnosticAction.ChangeModOption,
+                mod: Guid.TryParse(optionId, out var id) ? id : null, cancellationToken: cancellationToken);
 
         public ModLibraryService(
             string libraryPath,
