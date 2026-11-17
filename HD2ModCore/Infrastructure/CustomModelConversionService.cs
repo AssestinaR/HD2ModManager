@@ -38,6 +38,41 @@ public sealed class CustomModelConversionService(StoragePaths paths, IModInforma
 			.OrderBy(candidate => candidate.DisplayName).ToArray();
 	}
 
+	/// <summary>
+	/// 合并多条来源节点读出的装备目录：同一个 <c>ArchiveId</c> 在不同子级（如本体、上衣、裙子）里各自只占一部分部件，
+	/// 按 Archive 去重时必须把各来源的 <see cref="EquipmentUnitCatalogEntry.Parts"/> 合并，不能只留第一份而丢掉子级部件。
+	/// </summary>
+	public static IReadOnlyList<EquipmentUnitCatalogEntry> MergeCatalogEntries(IEnumerable<EquipmentUnitCatalogEntry> entries)
+	{
+		ArgumentNullException.ThrowIfNull(entries);
+		var merged = new List<EquipmentUnitCatalogEntry>();
+		var indexByArchive = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		foreach (var entry in entries)
+		{
+			if (!indexByArchive.TryGetValue(entry.ArchiveId, out var index))
+			{
+				indexByArchive[entry.ArchiveId] = merged.Count;
+				merged.Add(entry);
+				continue;
+			}
+
+			var existing = merged[index];
+			var parts = new List<EquipmentUnitPart>(existing.Parts);
+			var seenParts = existing.Parts
+				.Select(part => (part.UnitAssetKey, part.MeshInfoIndex, part.MeshId))
+				.ToHashSet();
+			foreach (var part in entry.Parts)
+			{
+				if (seenParts.Add((part.UnitAssetKey, part.MeshInfoIndex, part.MeshId)))
+					parts.Add(part);
+			}
+
+			merged[index] = existing with { Parts = parts };
+		}
+
+		return merged;
+	}
+
 	public static CustomModelConversionPlan BuildPlan(EquipmentUnitCatalogEntry source, string name, string key,
 		Func<string> nextId)
 		=> BuildPlan([source], name, key, nextId);

@@ -753,4 +753,28 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 			DeleteTree(mod);
 		}
 	}
+
+	[Fact]
+	public void PickHostIndex_PrefersVisibleLodUnit_OverCullingOnlyUnitWithMoreNonAvatarTransforms()
+	{
+		static UnitMeshModel MakeUnit(bool hasVisibleLod, uint[] transformHashes)
+		{
+			var semantic = new UnitMeshSemanticInfo("mesh", "Torso", "Armor", "Any", "", 0, 0, IsCullingBody: !hasVisibleLod, IsStaticMesh: false, IsLod: false);
+			var mesh = new UnitMeshInfo(0, 0, 1, 0, 0, 0, 0, 0, 0, 0, semantic, [], []);
+			var raw = new UnitRawMeshData(0, 1, 0, 0, [], [], []);
+			return new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, [], [], [mesh], [], [], [raw])
+			{
+				TransformNameHashes = transformHashes,
+			};
+		}
+
+		var cullingWithManyTransforms = MakeUnit(hasVisibleLod: false, [101u, 102u, 103u, 104u, 105u]);
+		var visibleWithFewerTransforms = MakeUnit(hasVisibleLod: true, [201u]);
+
+		var picked = SectionalUnitMerger.PickHostIndex(
+			[cullingWithManyTransforms, visibleWithFewerTransforms],
+			new HashSet<uint>());
+
+		Assert.Equal(1, picked);
+	}
 }

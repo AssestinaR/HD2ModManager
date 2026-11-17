@@ -73,14 +73,9 @@ internal static class SectionalUnitMerger
 				.ConfigureAwait(false));
 		}
 
-		// 宿主选自定义骨（Avatar 里没有的节点）最全的那个来源：宿主有的骨 donor 不用再搬。合并结果最后写到承载件的键上，
-		// 宿主是谁和写到哪里无关；并列时保持传入顺序（主承载部位在前）。
 		var avatarHashes = avatar.NameHashes.ToHashSet();
 		var ids = spec.SourceFileIds.ToList();
-		var hostPick = Enumerable.Range(0, units.Count)
-			.OrderByDescending(index => units[index].Model.TransformNameHashes.Count(hash => !avatarHashes.Contains(hash)))
-			.ThenBy(index => index)
-			.First();
+		var hostPick = PickHostIndex([.. units.Select(unit => unit.Model)], avatarHashes);
 		if (hostPick != 0)
 		{
 			(units[0], units[hostPick]) = (units[hostPick], units[0]);
@@ -124,7 +119,17 @@ internal static class SectionalUnitMerger
 		}
 
 		if (inputsByMesh.Count == 0)
+		{
+			// 全部 donor 都是无可见 LOD 的占位/剔除件时，宿主自身已包含全部可见几何，直接原样返回即可。
+			if (units.Skip(1).All(donor => UnitLodFamilySource.ResolveAnchor(donor.Model) is null))
+			{
+				return new SectionalMergedUnit(
+					payload.TocData, payload.GpuResourceData, payload.StreamData,
+					host.Entry.Unknown1, host.Entry.Unknown2, host.Entry.Unknown3, host.Entry.Unknown4, warnings);
+			}
+
 			throw new InvalidDataException("来源之间没有共同可见 LOD，合并不了。");
+		}
 
 		var appended = new CanonicalDecorationUnitAppender().TryAppendLodFamily(
 			host,
@@ -157,6 +162,17 @@ internal static class SectionalUnitMerger
 			host.Entry.Unknown1, host.Entry.Unknown2, host.Entry.Unknown3, host.Entry.Unknown4,
 			warnings);
 	}
+
+	/// <summary>
+	/// 从来源 unit 里选合并宿主：优先选有可见 LOD 锚点的，其次选非 Avatar 变换节点最多的，并列保持传入顺序。
+	/// 必须先要求有可见网格，否则全 0 三角形占位/全剔除件仅因多出几个节点就会抢走宿主并直接失败。
+	/// </summary>
+	internal static int PickHostIndex(IReadOnlyList<UnitMeshModel> units, IReadOnlySet<uint> avatarHashes)
+		=> Enumerable.Range(0, units.Count)
+			.OrderByDescending(index => UnitLodFamilySource.ResolveAnchor(units[index]) is not null)
+			.ThenByDescending(index => units[index].TransformNameHashes.Count(hash => !avatarHashes.Contains(hash)))
+			.ThenBy(index => index)
+			.First();
 
 	/// <summary>与旧版拆件、跨甲合并同一个命名空间算法：不同来源各自的材质槽不会被当成同一个。</summary>
 	private static ulong MaterialNamespace(ulong unitFileId)

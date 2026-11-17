@@ -63,7 +63,9 @@ public sealed class RuntimeArmorModelStructureTests
 		var compiled = RuntimeArmorResourceFilter.Compile(source, new HashSet<ulong> { 1 });
 		Assert.Equal(2, source.ModelDefinitions.Single().Pieces!.Count);
 		Assert.Equal("0000000000000001", Assert.Single(compiled.ModelDefinitions.Single().Pieces!).Unit);
-		Assert.Throws<InvalidDataException>(() => RuntimeArmorResourceFilter.Compile(source, new HashSet<ulong>()));
+		var exception = Assert.Throws<UndeployedMappedModelsException>(() => RuntimeArmorResourceFilter.Compile(source, new HashSet<ulong>()));
+		Assert.Equal(["test"], exception.ModelKeys);
+		Assert.Equal(["test"], exception.ModelNames);
 	}
 
 	[Fact]

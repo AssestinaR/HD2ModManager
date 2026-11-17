@@ -2399,6 +2399,13 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				}
 			}
 		}
+		catch (UndeployedMappedModelsException exception)
+		{
+			notifications.Show($"应用护甲注册失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(10), "护甲注册");
+			StatusTitle = "应用失败";
+			StatusDetail = exception.Message;
+			OfferClearUndeployedMappedModels(exception);
+		}
 		catch (Exception exception) when (exception is IOException
 			or UnauthorizedAccessException
 			or InvalidDataException
@@ -2414,6 +2421,47 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			// 应用结束进入 10 秒冷却；冷却结束后按钮重新可用（即便没有新的改动）。
 			_ = RunApplyCooldownAsync();
 		}
+	}
+
+	private void OfferClearUndeployedMappedModels(UndeployedMappedModelsException exception)
+	{
+		if (exception.ModelKeys.Count == 0) return;
+		var keySet = exception.ModelKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var lines = new List<string>(exception.ModelKeys.Count);
+		for (var i = 0; i < exception.ModelKeys.Count; i++)
+		{
+			var key = exception.ModelKeys[i];
+			var name = i < exception.ModelNames.Count ? exception.ModelNames[i] : key;
+			var count = Mappings.Count(row => row.Source.IsCustomModel && string.Equals(row.Source.ModelKey, key, StringComparison.OrdinalIgnoreCase));
+			lines.Add($"• {name}（映射了 {count} 件护甲）");
+		}
+
+		var message = "以下自定义素体在游戏目录里没有已部署的 Unit，导致无法应用护甲映射：\n\n"
+			+ string.Join("\n", lines)
+			+ "\n\n是否立即清理这些未部署素体的映射？\n"
+			+ "（选「是」会移除它们的映射并保存；如果这些素体还在模组库里只是还没启用或部署，请选「否」先去启用并部署。）";
+
+		if (Views.AppDialog.Show(message, "未部署的素体映射", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning) != System.Windows.MessageBoxResult.Yes)
+			return;
+
+		var removed = Mappings.Where(row => row.Source.IsCustomModel && row.Source.ModelKey is not null && keySet.Contains(row.Source.ModelKey)).ToArray();
+		if (removed.Length == 0) return;
+
+		var released = removed.Select(row => row.Target.ItemId).ToHashSet();
+		foreach (var key in keySet)
+		{
+			var syntheticId = SyntheticModelItemId(key);
+			if (selectedProviderId == syntheticId) CloseProvider();
+			pendingProviderIds.Remove(syntheticId);
+		}
+		foreach (var mapping in removed) Mappings.Remove(mapping);
+		targetModes = targetModes.Where(item => !released.Contains(item.TargetItemId)).ToArray();
+		selection.Clear();
+		RebuildProjections();
+		MarkModelDefinitionsDirty();
+		StatusTitle = "已清理未部署映射";
+		StatusDetail = $"已移除 {removed.Length} 条未部署素体的映射，请重新点击「应用」。";
+		notifications.Show(StatusDetail, NotificationLevel.Info, TimeSpan.FromSeconds(8), "护甲注册");
 	}
 
 	private async Task<RuntimeArmorRegistrySnapshot> WaitForRuntimeAsync(int revision)

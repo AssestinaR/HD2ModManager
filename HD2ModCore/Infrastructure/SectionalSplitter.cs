@@ -93,6 +93,66 @@ public static class SectionalSplitter
 		return Convert.ToHexString(hash[..6]).ToLowerInvariant();
 	}
 
+	internal static string[] AssignOutputUnitIds(
+		IReadOnlyList<SectionalSplitTarget> targets,
+		string? normalizedPrefix,
+		HashSet<string>? donorIds = null)
+	{
+		var outputUnitIds = new string[targets.Count];
+		var ordinal = 0;
+		for (var targetIndex = 0; targetIndex < targets.Count; targetIndex++)
+		{
+			var target = targets[targetIndex];
+			if (donorIds is not null)
+			{
+				foreach (var donor in target.DonorUnitIds)
+					donorIds.Add(donor);
+			}
+
+			outputUnitIds[targetIndex] = normalizedPrefix is not null
+				? $"{normalizedPrefix}{++ordinal:x4}"
+				: target.HostUnitId;
+		}
+
+		return outputUnitIds;
+	}
+
+	internal static SectionalSplitPlan RemapOutputPlan(
+		SectionalSplitPlan plan,
+		IReadOnlyList<string> outputUnitIds,
+		IReadOnlySet<string> donorIds)
+	{
+		var outputByBucketAndHost = new Dictionary<(string Bucket, string HostUnitId), string>();
+		var hostToOutput = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		for (var targetIndex = 0; targetIndex < plan.Targets.Count; targetIndex++)
+		{
+			var target = plan.Targets[targetIndex];
+			var mapped = outputUnitIds[targetIndex];
+			outputByBucketAndHost[($"{target.Slot}/{target.BodyType}", target.HostUnitId)] = mapped;
+			hostToOutput.TryAdd(target.HostUnitId, mapped);
+		}
+
+		return plan with
+		{
+			Targets = plan.Targets
+				.Select((target, targetIndex) => target with { HostUnitId = outputUnitIds[targetIndex] })
+				.ToArray(),
+			Groups = plan.Groups
+				.Select(group => group with
+				{
+					MemberUnitIds = group.MemberUnitIds
+						.Select(id => !donorIds.Contains(id)
+							&& ((group.ExclusiveGroup is not null
+									&& outputByBucketAndHost.TryGetValue((group.ExclusiveGroup, id), out var bucketMapped))
+								|| hostToOutput.TryGetValue(id, out bucketMapped))
+							? bucketMapped
+							: id)
+						.ToArray(),
+				})
+				.ToArray(),
+		};
+	}
+
 	private static string? NormalizeUnitIdPrefix(string? outputUnitIdPrefix)
 	{
 		if (string.IsNullOrWhiteSpace(outputUnitIdPrefix))
@@ -203,33 +263,10 @@ public static class SectionalSplitter
 		var session = new CanonicalPatchSession();
 		var originsByTarget = new Dictionary<string, IReadOnlyList<CanonicalAppendedSection>>(StringComparer.Ordinal);
 		var donorIds = new HashSet<string>(StringComparer.Ordinal);
-		var hostToOutput = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		var ordinal = 0;
-		foreach (var target in plan.Targets)
-		{
-			foreach (var donor in target.DonorUnitIds)
-				donorIds.Add(donor);
-			hostToOutput[target.HostUnitId] = normalizedPrefix is not null
-				? $"{normalizedPrefix}{++ordinal:x4}"
-				: target.HostUnitId;
-		}
-
+		var outputUnitIds = AssignOutputUnitIds(plan.Targets, normalizedPrefix, donorIds);
 		var effectivePlan = normalizedPrefix is null
 			? plan
-			: plan with
-			{
-				Targets = plan.Targets
-					.Select(target => target with { HostUnitId = hostToOutput[target.HostUnitId] })
-					.ToArray(),
-				Groups = plan.Groups
-					.Select(group => group with
-					{
-						MemberUnitIds = group.MemberUnitIds
-							.Select(id => !donorIds.Contains(id) && hostToOutput.TryGetValue(id, out var mapped) ? mapped : id)
-							.ToArray(),
-					})
-					.ToArray(),
-			};
+			: RemapOutputPlan(plan, outputUnitIds, donorIds);
 
 		// 段来源：谁贡献了哪一段。名字由调用方给（unit id → 来源条目名），它才知道每个 unit 来自哪份来源。
 		var ownSourceByTarget = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -244,11 +281,12 @@ public static class SectionalSplitter
 				AddUnique(presentSources, sourceNameOf(donorId));
 		}
 
-		foreach (var target in plan.Targets)
+		for (var targetIndex = 0; targetIndex < plan.Targets.Count; targetIndex++)
 		{
+			var target = plan.Targets[targetIndex];
 			cancellationToken.ThrowIfCancellationRequested();
 			var host = sources.Units[target.HostUnitId];
-			var outputUnitId = hostToOutput[target.HostUnitId];
+			var outputUnitId = outputUnitIds[targetIndex];
 			var outputAssetKey = normalizedPrefix is not null
 				? new AdaptationAssetKey(PatchUnitMeshReader.UnitTypeId, ulong.Parse(outputUnitId, NumberStyles.HexNumber, CultureInfo.InvariantCulture))
 				: host.Entry.AssetKey;

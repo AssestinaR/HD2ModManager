@@ -187,19 +187,16 @@ public partial class ModDetailsPageViewModel
 				throw new InvalidOperationException("这个 Mod 与它的子级里都没有来源 patch（都不是 legacy 类）。");
 
 			// 候选表覆盖**整条来源链**：主 Mod 与每个 legacy 子级各读一次事实再合并。
-			// 只读主 Mod 的话，护甲/头盔拆在子级里的形态根本进不了选择表。
-			var catalog = new List<EquipmentUnitCatalogEntry>();
-			var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			// 同一个 archive 在不同子级里可能只占一部分部件（如本体在主包、上衣/裙子/鞋在子级），
+			// 必须合并它们的 Parts，不能只留第一份而丢掉子级部件。
+			var rawEntries = new List<EquipmentUnitCatalogEntry>();
 			foreach (var node in sourceNodes)
 			{
 				var facts = await ReadFactsAsync(node);
-				foreach (var entry in await converter.InspectAsync(facts))
-				{
-					// 同一个 archive 只留一份：不同来源可能都报同一件护甲（共用 unit 的情况）。
-					if (!seen.Add(entry.ArchiveId)) continue;
-					catalog.Add(entry);
-				}
+				rawEntries.AddRange(await converter.InspectAsync(facts));
 			}
+
+			var catalog = CustomModelConversionService.MergeCatalogEntries(rawEntries);
 
 			bar.SetSources(catalog
 				.OrderBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
