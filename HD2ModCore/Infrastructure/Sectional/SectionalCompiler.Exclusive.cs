@@ -77,67 +77,127 @@ public static partial class SectionalCompiler
 		{
 			// ③ P4b 合并：先在来源副本上烘好关闭的 section（来源 unit 键空间，与自身素体同一条路径），
 			// 再从烘好的副本合并几何。合并之后 section 序号变了，不能再按来源键翻译着烘。
+			var effectiveDisabled = disabledSections;
+			IReadOnlyDictionary<string, IReadOnlyCollection<int>>? updatedDisabled = null;
 			var writeSource = sourcePatch;
 			var preBakedSections = 0;
 			var mergeWarnings = new List<string>();
+			var overflowInfo = new List<string>();
 			var mergedUnits = new Dictionary<string, SectionalMergedUnit>(StringComparer.Ordinal);
 			if (preStaging is not null)
 			{
-				string? prepareError = null;
 				HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitTransformInfo? avatar = null;
-				string? pre = null;
-				if (string.IsNullOrWhiteSpace(context.GameDataFolder) || !Directory.Exists(context.GameDataFolder))
+				while (true)
 				{
-					prepareError = "合并几何要读玩家头像骨架，需要游戏 data 目录：请先在设置页指定游戏目录。";
-				}
-				else
-				{
-					try
+					string? prepareError = null;
+					string? pre = null;
+					mergeWarnings.Clear();
+					mergedUnits.Clear();
+					if (context.MergeUnitOverride is null
+						&& (string.IsNullOrWhiteSpace(context.GameDataFolder) || !Directory.Exists(context.GameDataFolder)))
 					{
-						pre = OverwritePatchInstaller.Install(preStaging, sourcePatch).PatchPath;
-						var preBuilt = await WardrobeSectionMapFile.BuildAsync(pre, cancellationToken).ConfigureAwait(false);
-						var preDocument = WardrobeSectionMapFile.ApplyUnitIdentities(
-							preBuilt.Document, SourceUnitIdentities(sourceMap, plan: null));
-						var preBaked = await WardrobeSectionBaker
-							.BakeAsync(pre, preDocument, disabledSections ?? EmptySections, cancellationToken)
-							.ConfigureAwait(false);
-						preBakedSections = preBaked.SectionsDisabled;
-						mergeWarnings.AddRange(preBaked.Warnings);
-						avatar = await SectionalUnitMerger.ReadAvatarAsync(context.GameDataFolder, cancellationToken).ConfigureAwait(false);
+						prepareError = "合并几何要读玩家头像骨架，需要游戏 data 目录：请先在设置页指定游戏目录。";
 					}
-					catch (Exception exception) when (IsExpected(exception))
-					{
-						prepareError = exception.Message;
-					}
-				}
-
-				foreach (var item in accepted.Where(item => item.IsMerged).ToArray())
-				{
-					var reason = prepareError;
-					if (reason is null)
+					else
 					{
 						try
 						{
-							foreach (var group in item.Merges.GroupBy(merge => string.Join(",", merge.SourceFileIds)))
-							{
-								if (mergedUnits.ContainsKey(group.Key)) continue;
-								mergedUnits[group.Key] = await SectionalUnitMerger
-									.MergeAsync(pre!, new SectionalUnitMergeSpec(group.First().SourceFileIds), avatar!, cancellationToken)
-									.ConfigureAwait(false);
-							}
+							pre = OverwritePatchInstaller.Install(preStaging, sourcePatch).PatchPath;
+							var preBuilt = await WardrobeSectionMapFile.BuildAsync(pre, cancellationToken).ConfigureAwait(false);
+							var preDocument = WardrobeSectionMapFile.ApplyUnitIdentities(
+								preBuilt.Document, SourceUnitIdentities(sourceMap, plan: null));
+							var preBaked = await WardrobeSectionBaker
+								.BakeAsync(pre, preDocument, effectiveDisabled ?? EmptySections, cancellationToken)
+								.ConfigureAwait(false);
+							preBakedSections = preBaked.SectionsDisabled;
+							mergeWarnings.AddRange(preBaked.Warnings);
+							if (context.MergeUnitOverride is null && avatar is null)
+								avatar = await SectionalUnitMerger.ReadAvatarAsync(context.GameDataFolder!, cancellationToken).ConfigureAwait(false);
 						}
 						catch (Exception exception) when (IsExpected(exception))
 						{
-							reason = exception.Message;
+							prepareError = exception.Message;
 						}
 					}
 
-					if (reason is null) continue;
-					accepted.Remove(item);
-					failures.Add(new SectionalTargetFailure(item.ItemId, item.Name, reason));
-				}
+					var retryAfterDisable = false;
+					foreach (var item in accepted.Where(item => item.IsMerged).ToArray())
+					{
+						var reason = prepareError;
+						if (reason is null)
+						{
+							try
+							{
+								foreach (var group in item.Merges.GroupBy(merge => string.Join(",", merge.SourceFileIds)))
+								{
+									if (mergedUnits.ContainsKey(group.Key)) continue;
+									var spec = new SectionalUnitMergeSpec(group.First().SourceFileIds);
+									mergedUnits[group.Key] = context.MergeUnitOverride is not null
+										? await context.MergeUnitOverride(pre!, spec, cancellationToken).ConfigureAwait(false)
+										: await SectionalUnitMerger.MergeAsync(pre!, spec, avatar!, cancellationToken).ConfigureAwait(false);
+								}
+							}
+							catch (SectionalMergeBufferOverflowException overflow)
+							{
+								var overflowContext = await SectionalMergeOverflowAnalyzer
+									.AnalyzeAsync(
+										modDirectory,
+										context.ModDisplayName,
+										payload,
+										sourcePatch,
+										$"专属切换承载件（{item.Name}）",
+										overflow.SourceFileIds,
+										overflow.ActualBytes,
+										overflow.LimitBytes,
+										effectiveDisabled,
+										canFallbackToUnmerged: false,
+										cancellationToken)
+									.ConfigureAwait(false);
 
-				if (accepted.Any(item => item.IsMerged)) writeSource = pre!;
+								if (context.OnMergeOverflow is not null)
+								{
+									var decision = await context.OnMergeOverflow(overflowContext, cancellationToken).ConfigureAwait(false);
+									if (decision.Action == SectionalMergeOverflowAction.DisableSelectedGroups && decision.DisabledGroupIds.Count != 0)
+									{
+										var components = await SectionGroupFile.TryReadAsync(payload, cancellationToken).ConfigureAwait(false);
+										effectiveDisabled = SectionalMergeOverflowAnalyzer.ApplyDisabledGroups(
+											effectiveDisabled, components, decision.DisabledGroupIds);
+										updatedDisabled = effectiveDisabled;
+										var disabledNames = overflowContext.Groups
+											.Where(candidate => decision.DisabledGroupIds.Contains(candidate.GroupId, StringComparer.Ordinal))
+											.Select(candidate => candidate.DisplayName)
+											.ToArray();
+										if (disabledNames.Length != 0)
+										{
+											overflowInfo.Add($"已关闭多余组件（{string.Join("、", disabledNames)}），以保持合并单流在游戏 128 MiB 显存上限以内。");
+										}
+
+										retryAfterDisable = true;
+										break;
+									}
+
+									return SectionalCompileResult.Failure(
+										"已取消专属换甲编译：合并模型超出游戏 D3D12 单流 128 MiB 显存块上限。",
+										SectionalCompileKind.Armor);
+								}
+
+								reason = $"合并单流达到 {SectionalMergeOverflowAnalyzer.FormatMiB(overflow.ActualBytes)}，超过游戏 D3D12 128.0 MiB 上限（{SectionalMergeOverflowAnalyzer.DescribeConflicts(overflowContext)}）";
+							}
+							catch (Exception exception) when (IsExpected(exception))
+							{
+								reason = exception.Message;
+							}
+						}
+
+						if (reason is null) continue;
+						accepted.Remove(item);
+						failures.Add(new SectionalTargetFailure(item.ItemId, item.Name, reason));
+					}
+
+					if (retryAfterDisable) continue;
+					if (accepted.Any(item => item.IsMerged)) writeSource = pre!;
+					break;
+				}
 			}
 
 			// ④ 有目标失败：自动跳过（「继续并记住」）或问用户；回滚 = 什么都没写（此刻还没物化）。
@@ -191,7 +251,7 @@ public static partial class SectionalCompiler
 				.ConfigureAwait(false);
 			var documented = WardrobeSectionMapFile.ApplyUnitIdentities(
 				built.Document, SourceUnitIdentities(sourceMap, plan));
-			var translated = anyMerged ? EmptySections : TranslateDisabled(disabledSections, plan.Replacements);
+			var translated = anyMerged ? EmptySections : TranslateDisabled(effectiveDisabled, plan.Replacements);
 			var baked = await WardrobeSectionBaker
 				.BakeAsync(staged, documented, translated, cancellationToken)
 				.ConfigureAwait(false);
@@ -208,7 +268,8 @@ public static partial class SectionalCompiler
 				cancellationToken).ConfigureAwait(false);
 			DeleteStaleCustomModel(modDirectory);
 
-			var info = new List<string>(plan.Info);
+			var info = new List<string>(overflowInfo);
+			info.AddRange(plan.Info);
 			var warnings = new List<string>(plan.Warnings);
 			if (baked.SectionsDisabled + preBakedSections != 0)
 				info.Add($"已把 {baked.SectionsDisabled + preBakedSections} 个 section 烘成关闭状态。");
@@ -241,6 +302,7 @@ public static partial class SectionalCompiler
 				SkippedTargets = failures,
 				CarrierCount = combined.CarrierCount,
 				MergedModelCount = combined.Merges.Count,
+				UpdatedDisabledSections = updatedDisabled,
 			};
 		}
 		catch (Exception exception) when (IsExpected(exception))

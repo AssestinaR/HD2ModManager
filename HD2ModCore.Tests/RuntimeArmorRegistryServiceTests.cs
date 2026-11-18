@@ -981,6 +981,23 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal(payload, await File.ReadAllBytesAsync(backup));
 	}
 
+	[Fact]
+	public async Task EnsureSiblingLogsDirectory_StandardArmorRegistryLayout_CreatesLogsFolderOnlyForStandardLeaf()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		Assert.False(Directory.Exists(Path.Combine(fixture.Root, "Logs")));
+		var snap = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(snap.Fingerprint, true, []);
+		Assert.False(Directory.Exists(Path.Combine(fixture.Root, "Logs")));
+
+		var standardBase = Path.Combine(fixture.Root, "CowboyBingus", "Helldivers2");
+		var standardRegistry = Path.Combine(standardBase, "ArmorRegistry");
+		var standardService = new RuntimeArmorRegistryService(new StoragePaths(Path.Combine(fixture.Root, "app2")), standardRegistry);
+		var standardSnap = await standardService.ReadSnapshotAsync();
+		await standardService.ApplyAsync(standardSnap.Fingerprint, true, []);
+		Assert.True(Directory.Exists(Path.Combine(standardBase, "Logs")));
+	}
+
 	// 素体必须至少有一个 piece 才算有效结构，所以给一个最小可用的 body/slot/unit。
 	private static RuntimeArmorRegistryModel Model(string key) => new(
 		key,

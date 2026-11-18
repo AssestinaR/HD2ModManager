@@ -531,7 +531,7 @@ public sealed class KitInstanceTests
 		var payload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(entry);
 		var text = Encoding.UTF8.GetString(payload.TocData.AsSpan(8));
 		Assert.StartsWith("-- HD2-Addon: mods/hd2modmanager/kit_instance_hider\n", text, StringComparison.Ordinal);
-		Assert.Contains("local M = { version = '0.4.5'", text, StringComparison.Ordinal);
+		Assert.Contains("local M = { version = '0.4.6'", text, StringComparison.Ordinal);
 		Assert.Equal(BinaryPrimitives.ReadUInt32LittleEndian(payload.TocData.AsSpan(0)), (uint)(payload.TocData.Length - 8));
 		Assert.Equal(2u, BinaryPrimitives.ReadUInt32LittleEndian(payload.TocData.AsSpan(4)));
 	}

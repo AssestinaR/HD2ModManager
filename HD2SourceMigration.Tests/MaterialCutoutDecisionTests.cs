@@ -309,4 +309,45 @@ public sealed class MaterialCutoutDecisionTests
 		Assert.Contains("16", exception.Message);
 		Assert.Contains("12", exception.Message);
 	}
+
+	[Fact]
+	public void AdditivePixelsBecomeUnpremultipliedRgbPlusLuminanceAlphaAndUseAlphaClip()
+	{
+		// 第 0 像素：纯黑待机底；第 1 像素：紫色星芒 (80, 40, 128)；第 2 像素：纯白核心。
+		var rgba = new byte[]
+		{
+			0, 0, 0, 255,
+			80, 40, 128, 255,
+			255, 255, 255, 255,
+			0, 0, 0, 255,
+		};
+
+		MaterialAppearance.ConvertAdditiveToAlpha(rgba);
+
+		Assert.Equal(new byte[] { 0, 0, 0, 0 }, rgba[0..4]);
+		Assert.Equal(128, rgba[7]);
+		Assert.Equal(159, rgba[4]);
+		Assert.Equal(80, rgba[5]);
+		Assert.Equal(255, rgba[6]);
+		Assert.Equal(new byte[] { 255, 255, 255, 255 }, rgba[8..12]);
+
+		// 全黑待机帧（flash_1 第 0 帧）转换后 IsEmpty == true，在 wantsAdditive 下必须切 alphaclip 隐藏。
+		var allBlackFrame = new byte[16];
+		for (var i = 3; i < allBlackFrame.Length; i += 4)
+			allBlackFrame[i] = 255;
+		MaterialAppearance.ConvertAdditiveToAlpha(allBlackFrame);
+		var emptyStats = TextureAlpha.Measure(allBlackFrame);
+		Assert.True(emptyStats.IsEmpty);
+		Assert.True(SourceMaterialConverter.ShouldUseAlphaClip(
+			wantsTransparency: true, hasSourceOpacity: true, emptyStats, wantsAlphaTest: false, wantsAdditive: true));
+
+		// 稀疏星点（仅 2% 可见像素）在 wantsAdditive 下也必须切 alphaclip，不能退回实心黑块。
+		var sparseAdditive = new AlphaStats(Min: 0, Max: 255, Coverage: 0.98)
+		{
+			VisibleCoverage = 0.02,
+			TransparentShare = 0.98,
+		};
+		Assert.True(SourceMaterialConverter.ShouldUseAlphaClip(
+			wantsTransparency: true, hasSourceOpacity: true, sparseAdditive, wantsAlphaTest: false, wantsAdditive: true));
+	}
 }

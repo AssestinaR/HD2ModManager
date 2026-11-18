@@ -25,6 +25,54 @@ public sealed record CanonicalBoneInfoRebuild(int LodIndex, UnitBoneInfo BoneInf
 
 public sealed class CanonicalUnitRebuilder
 {
+	public const uint MaxD3D12SingleBufferBytes = 128u * 1024u * 1024u;
+	public const string StreamBufferLimitDiagnosticCode = "StreamBufferExceedsD3D12BlockLimit";
+
+	public static bool TryParseStreamBufferLimitDiagnostic(
+		CanonicalPlanDiagnostic diagnostic,
+		out int streamIndex,
+		out string bufferKind,
+		out ulong actualBytes,
+		out ulong limitBytes,
+		out uint stride)
+	{
+		streamIndex = 0;
+		bufferKind = "VertexBuffer";
+		actualBytes = 0;
+		limitBytes = MaxD3D12SingleBufferBytes;
+		stride = 0;
+		if (diagnostic is null || !string.Equals(diagnostic.Code, StreamBufferLimitDiagnosticCode, StringComparison.Ordinal))
+			return false;
+
+		foreach (var part in diagnostic.Message.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+		{
+			var eq = part.IndexOf('=', StringComparison.Ordinal);
+			if (eq <= 0) continue;
+			var key = part[..eq].Trim();
+			var val = part[(eq + 1)..].Trim();
+			switch (key)
+			{
+				case "Stream":
+					_ = int.TryParse(val, System.Globalization.CultureInfo.InvariantCulture, out streamIndex);
+					break;
+				case "Buffer":
+					bufferKind = val;
+					break;
+				case "Bytes":
+					_ = ulong.TryParse(val, System.Globalization.CultureInfo.InvariantCulture, out actualBytes);
+					break;
+				case "Limit":
+					_ = ulong.TryParse(val, System.Globalization.CultureInfo.InvariantCulture, out limitBytes);
+					break;
+				case "Stride":
+					_ = uint.TryParse(val, System.Globalization.CultureInfo.InvariantCulture, out stride);
+					break;
+			}
+		}
+
+		return actualBytes > 0;
+	}
+
 	private const int MeshInfoHeaderSize = 128;
 	private const int MeshSectionSize = 24;
 	private const int StreamRecordSize = 432;
@@ -88,6 +136,27 @@ public sealed class CanonicalUnitRebuilder
 					.ThenBy(mesh => mesh.Index)
 					.ToArray();
 				Trace($"stream={stream.Index} stride={stream.VertexStride} indexType={stream.IndexBufferType} meshes={streamMeshes.Length} gpuStart={gpuData.Count}");
+				var plannedVertices = streamMeshes.Aggregate(0UL, (sum, mesh) => checked(sum + (ulong)rawByMesh[mesh.Index].Vertices.Count));
+				var rawVertexBytes = checked(plannedVertices * stream.VertexStride);
+				var plannedVertexEnd = checked(((ulong)gpuData.Count + rawVertexBytes + 15UL) & ~15UL);
+				var plannedVertexBytes = checked(plannedVertexEnd - (ulong)gpuData.Count);
+				if (plannedVertexBytes >= MaxD3D12SingleBufferBytes)
+				{
+					diagnostics.Add(new(
+						StreamBufferLimitDiagnosticCode,
+						$"Stream={stream.Index}; Buffer=VertexBuffer; Bytes={plannedVertexBytes}; Limit={MaxD3D12SingleBufferBytes}; Vertices={plannedVertices}; Stride={stream.VertexStride}; Stream {stream.Index} vertex buffer ({plannedVertexBytes} bytes) reaches or exceeds the Helldivers 2 D3D12 single-buffer block limit ({MaxD3D12SingleBufferBytes} bytes / 128 MiB)."));
+					continue;
+				}
+				var plannedIndices = streamMeshes.Aggregate(0UL, (sum, mesh) => checked(sum + (ulong)rawByMesh[mesh.Index].Sections.Sum(section => (long)section.Triangles.Count * 3L)));
+				var indexStride = stream.IndexBufferType == 0 ? 2u : 4u;
+				var plannedIndexBytes = checked(plannedIndices * indexStride);
+				if (plannedIndexBytes >= MaxD3D12SingleBufferBytes)
+				{
+					diagnostics.Add(new(
+						StreamBufferLimitDiagnosticCode,
+						$"Stream={stream.Index}; Buffer=IndexBuffer; Bytes={plannedIndexBytes}; Limit={MaxD3D12SingleBufferBytes}; Indices={plannedIndices}; Stride={indexStride}; Stream {stream.Index} index buffer ({plannedIndexBytes} bytes) reaches or exceeds the Helldivers 2 D3D12 single-buffer block limit ({MaxD3D12SingleBufferBytes} bytes / 128 MiB)."));
+					continue;
+				}
 				var vertexOffsets = new Dictionary<int, uint>();
 				var vertexStart = checked((uint)gpuData.Count);
 				var vertexCount = 0u;

@@ -1,11 +1,11 @@
--- 离线测试：kit_instance_hider.lua 0.4.5（假引擎，不需要游戏）。
+-- 离线测试：kit_instance_hider.lua 0.4.6（假引擎，不需要游戏）。
 -- 运行：luajit HD2RuntimeArmorOverride/tests/test_kit_instance_hider.lua <src>
 -- 没有 luajit 时：python -I HD2RuntimeArmorOverride/scripts/run_lua_test.py <pylib> <本文件> <src>
 rawset(_G, 'HD2_KIT_HIDER_OFFLINE', true)
 local path = (arg and arg[1]) or 'HD2RuntimeArmorOverride/src/kit_instance_hider.lua'
 local M = dofile(path)
 assert(M.status == 'offline', 'offline guard')
-assert(M.version == '0.4.5', 'version')
+assert(M.version == '0.4.6', 'version')
 
 local MARKER = '82595b5d94c57343'
 local CAPE = 'ea846ef460cc5ba0'
@@ -397,7 +397,7 @@ do
 	end
 	assert(worlds.officer[1].visible == false, 'rules read through io drive the hiding')
 
-	-- B. 有加载器：base 取 log_directory 上一级，日志走 open_log
+	-- B. LOCALAPPDATA 缺席时回退取 log_directory 上一级，日志走 open_log
 	local opened, logLines = {}, {}
 	local loader = { api = 1, log_directory = 'D:/X/Logs',
 		open_log = function(name) opened[#opened + 1] = name
@@ -409,6 +409,31 @@ do
 	for _ = 1, 4 do t = t + 1; g2.update(0.016) end
 	assert(opened[1] == 'KitInstanceHider.log' and #logLines > 0, 'loader open_log used')
 	assert(#writes2 == 0, 'no io log when the loader provides one')
+
+	-- B2. MDL3 ProgramData 模式：log_directory 在 C:/ProgramData，但 LOCALAPPDATA 有效时规则仍读用户目录
+	worlds.officer[1].visible = true
+	local mdl3Opened, mdl3Logs = {}, {}
+	local mdl3Loader = { api = 1, mdl3 = true, log_directory = 'C:/ProgramData/CowboyBingus/Helldivers2/Logs',
+		open_log = function(name) mdl3Opened[#mdl3Opened + 1] = name
+			return { write = function(_, s) mdl3Logs[#mdl3Logs + 1] = s end, flush = function() end } end }
+	local userRulesPath = 'C:/Users/Alice/AppData/Local/CowboyBingus/Helldivers2/ArmorRegistry/kit-instance.rules'
+	local ioFakeMdl3, writesMdl3 = fake_io({ [userRulesPath] = rules_text(9, OFFICER_RULE) })
+	local gMdl3 = { stingray = Sg, io = ioFakeMdl3,
+		os = { getenv = function(k) assert(k == 'LOCALAPPDATA'); return 'C:/Users/Alice/AppData/Local' end,
+			clock = function() return t end },
+		CowboyBingusModLoader = mdl3Loader }
+	setmetatable(gMdl3, { __index = function() return nil end })
+	assert(M.base_directory(gMdl3) == 'C:/Users/Alice/AppData/Local/CowboyBingus/Helldivers2')
+	assert(M.install(gMdl3).status == 'active')
+	for _ = 1, 12 do t = t + 1; gMdl3.update(0.016) end
+	assert(worlds.officer[1].visible == false, 'MDL3 ProgramData must still read rules from real LOCALAPPDATA')
+	assert(mdl3Opened[1] == 'KitInstanceHider.log' and #mdl3Logs > 0, 'MDL3 open_log used')
+	assert(#writesMdl3 == 0, 'no direct file writes when open_log succeeds')
+
+	-- B3. LOCALAPPDATA 含 '?'（非当前 ANSI 代码页字符）时回退到 loader.log_directory
+	local gBrokenAcp = { os = { getenv = function() return 'C:/Users/??/AppData/Local' end },
+		CowboyBingusModLoader = mdl3Loader }
+	assert(M.base_directory(gBrokenAcp) == 'C:/ProgramData/CowboyBingus/Helldivers2')
 
 	-- C. 缺条件：不安装、不报错
 	local g3 = { stingray = Sg, os = { getenv = function() return 'C:/L' end } }

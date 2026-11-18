@@ -3937,6 +3937,7 @@ public static class CliApplication
 		// 而它的失败现象是"整件身体不见了"——那种失败会把材质的问题一起遮住。
 		var wanted = options.Components;
 		IEnumerable<MeshGroup> selected;
+		IReadOnlyList<MeshGroup> bodyGroupSwitchCandidates;
 		// 切分/合并自己看到的取舍（哪些部位没有固定本体、哪些变体没并进去）。
 		// 这些是"产物看起来正常但模型缺了一块"的唯一线索，必须跟着报告走。
 		//
@@ -3953,16 +3954,19 @@ public static class CliApplication
 				inputs.Geometry, split.Groups, split.VertexRegions);
 			segmentationNotes.AddRange(merged.Notes);
 			selected = merged.Groups;
+			bodyGroupSwitchCandidates = merged.KeptComponents;
 		}
 		else if (wanted.Equals("none", StringComparison.OrdinalIgnoreCase))
 		{
 			segmentationNotes.AddRange(split.Diagnostics);
 			selected = split.Groups.Where(group => group.Kind == MeshGroupKind.BodyPart);
+			bodyGroupSwitchCandidates = [];
 		}
 		else if (wanted.Equals("all", StringComparison.OrdinalIgnoreCase))
 		{
 			segmentationNotes.AddRange(split.Diagnostics);
 			selected = split.Groups;
+			bodyGroupSwitchCandidates = split.Groups;
 		}
 		else
 		{
@@ -3971,6 +3975,8 @@ public static class CliApplication
 				.ToHashSet(StringComparer.OrdinalIgnoreCase);
 			selected = split.Groups.Where(group =>
 				group.Kind == MeshGroupKind.BodyPart || names.Contains(group.Name));
+			bodyGroupSwitchCandidates = split.Groups.Where(group =>
+				group.Kind == MeshGroupKind.Component && names.Contains(group.Name)).ToArray();
 		}
 
 		var selectedGroups = selected.ToArray();
@@ -4217,7 +4223,7 @@ public static class CliApplication
 		return new(full, "model", outputDirectory, inputs.MdlPath, split.Groups.Count,
 			selectedGroups.Length, package, modelKey, displayName, donors, registryError)
 		{
-			BodyGroupSwitches = BuildBodyGroupSwitches(inputs.Model, inputs.Geometry, split.Groups),
+			BodyGroupSwitches = BuildBodyGroupSwitches(inputs.Model, inputs.Geometry, bodyGroupSwitchCandidates),
 		};
 	}
 

@@ -33,6 +33,43 @@ public sealed class CanonicalAppendBoneCompilerTests
 		Assert.Equal(1u, result.Mesh!.Vertices[1].Components.Single(component => component.Type == 6).UIntValues[0]);
 	}
 
+	[Fact]
+	public void Compile_StripsUnbackedExtraBoneIndexGroupsWhenVertexHasSingleWeightGroup()
+	{
+		var target = Model([10, 20, 30], [2, 0, 1]);
+		var targetRaw = Mesh(0, 0, 1, 0);
+		var source = Model([10, 20, 30], [1, 2]);
+		var sourceBase = Mesh(0, 0, 1, 0);
+		var sourceVertexWithDeadGroups = sourceBase.Vertices[0] with
+		{
+			Components =
+			[
+				new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, [], [1, 0, 0, 0], []),
+				new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 1, [], [0, 0, 0, 0], []),
+				new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 2, [], [0, 0, 0, 0], []),
+				new UnitVertexComponentValue(7, "bone_weight", 35, "vec4_half", 0, [1, 0, 0, 0], [], []),
+			]
+		};
+		var sourceRaw = sourceBase with { Vertices = [sourceVertexWithDeadGroups] };
+		var appended = new UnitRawMeshData(0, 1, 0, 0,
+			[targetRaw.Sections[0], sourceRaw.Sections[0] with { MaterialIndex = 1, MaterialSlotId = 2, Triangles = [new UnitTriangleIndices(1, 1, 1)] }],
+			[new UnitTriangleIndices(0, 0, 0), new UnitTriangleIndices(1, 1, 1)],
+			[targetRaw.Vertices[0], sourceVertexWithDeadGroups with { Index = 1 }]);
+
+		var result = new CanonicalAppendBoneCompiler().TryCompile(
+			target,
+			targetRaw,
+			[new CanonicalAppendSource(source, sourceRaw)],
+			appended,
+			[new CanonicalAppendSectionOrigin(0, -1, 0), new CanonicalAppendSectionOrigin(1, 0, 0)]);
+
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(item => item.Message)));
+		var boneGroups = result.Mesh!.Vertices[1].Components.Where(component => component.Type == 6).ToArray();
+		var kept = Assert.Single(boneGroups);
+		Assert.Equal(0u, kept.Index);
+		Assert.Equal(1u, kept.UIntValues[0]);
+	}
+
 	private static UnitMeshModel Model(IReadOnlyList<uint> hashes, IReadOnlyList<uint> realIndices)
 	{
 		var identity = Matrix4x4.Identity;

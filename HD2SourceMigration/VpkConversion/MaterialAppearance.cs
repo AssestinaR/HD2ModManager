@@ -622,12 +622,64 @@ public static class MaterialAppearance
 
 	/// <summary>线性 0..1 的反射率 → sRGB 编码后的 0..255（与 BC7_UNORM_SRGB 的像素含义一致）。</summary>
 	public static byte LinearToSrgbByte(double linear)
+		=> (byte)Math.Clamp(Math.Round(LinearToSrgbUnit(linear) * 255.0), 0, 255);
+
+	/// <summary>线性 0..1 → sRGB 0..1。</summary>
+	public static double LinearToSrgbUnit(double linear)
 	{
 		linear = Math.Clamp(linear, 0, 1);
-		var srgb = linear <= 0.0031308
+		return linear <= 0.0031308
 			? linear * 12.92
 			: (1.055 * Math.Pow(linear, 1.0 / 2.4)) - 0.055;
-		return (byte)Math.Clamp(Math.Round(srgb * 255.0), 0, 255);
+	}
+
+	/// <summary>sRGB 字节 0..255 → 线性 0..1。</summary>
+	public static double SrgbByteToLinear(byte srgb)
+	{
+		var unit = srgb / 255.0;
+		return unit <= 0.04045
+			? unit / 12.92
+			: Math.Pow((unit + 0.055) / 1.055, 2.4);
+	}
+
+	/// <summary>
+	/// 将源侧 <c>$additive 1</c>（加法混合 <c>dst + src</c>）的底色像素就地转换为
+	/// 「反预乘底色 RGB + 亮度遮罩 A」。
+	/// <para>
+	/// 源侧加法混合下，黑色像素 <c>RGB=(0,0,0)</c>（例如闪光序列帧第 0 帧的全黑待机图，或星芒精灵的黑底）
+	/// 对画面的贡献为 0，应当完全不可见；若原样进 <c>advanced</c>，黑底会变成不透明实心黑片。
+	/// 这里取有效贡献峰值 <c>peak = max(R,G,B) × (A/255)</c> 写入 A 通道供 <c>alphaclip</c> 裁切/抖动，
+	/// 并将非黑像素反预乘到满幅度 <c>effRGB × (255 / peak)</c>，避免抖动点阵带上黑边。
+	/// </para>
+	/// </summary>
+	public static void ConvertAdditiveToAlpha(byte[] rgba)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			var alphaScale = rgba[offset + 3] / 255.0;
+			var effR = rgba[offset + 0] * alphaScale;
+			var effG = rgba[offset + 1] * alphaScale;
+			var effB = rgba[offset + 2] * alphaScale;
+			var peak = Math.Max(effR, Math.Max(effG, effB));
+			if (peak <= 0.5)
+			{
+				rgba[offset + 0] = 0;
+				rgba[offset + 1] = 0;
+				rgba[offset + 2] = 0;
+				rgba[offset + 3] = 0;
+				continue;
+			}
+
+			var unpremul = 255.0 / peak;
+			rgba[offset + 0] = (byte)Math.Clamp(Math.Round(effR * unpremul), 0, 255);
+			rgba[offset + 1] = (byte)Math.Clamp(Math.Round(effG * unpremul), 0, 255);
+			rgba[offset + 2] = (byte)Math.Clamp(Math.Round(effB * unpremul), 0, 255);
+			rgba[offset + 3] = (byte)Math.Clamp(Math.Round(peak), 0, 255);
+		}
 	}
 
 	/// <summary>
@@ -1076,6 +1128,55 @@ public static class MaterialAppearance
 		// 夹在 0.05..1：全黑的 ramp 会把底色压没（那更像是坏素材，不该由这里静默吃下去）。
 		static double Clamp(double value) => Math.Clamp(value / 255.0, 0.05, 1.0);
 		return [Clamp(r / count), Clamp(g / count), Clamp(b / count)];
+	}
+
+	/// <summary>
+	/// 提取原生 <c>VertexLitGeneric</c> <c>$lightwarptexture</c> 在可见半球（Half-Lambert <c>U ∈ [litStart, 1]</c>）
+	/// 上的<b>归一化色偏倍率</b>（sRGB 空间 0.5..1.0，最亮通道恒为 1.0）。
+	/// <para>
+	/// <b>为什么归一化到最大通道 = 1.0，而不是乘绝对亮度。</b>
+	/// HD2 的 <c>advanced</c> 着色器本身已计算 PBR 漫反射光照，若把 ramp 的绝对明度（常为 0.30~0.50）
+	/// 直接乘进底色，等于光照衰减被乘了两次，皮肤与浅色衣物会被压成暗灰泥色。
+	/// 除以最大通道后：中性灰 ramp（如 <c>(76,76,76)</c>）精确得到 <c>(1,1,1)</c>（完全不动），
+	/// 而带冷紫/暖粉倾向的二次元 ramp（如 <c>hair_warp</c>、<c>clothes_2_warp</c>）保留作者赋予的色相，
+	/// 把灰白底图还原成源侧的紫罗兰色，同时不压垮明度。
+	/// </para>
+	/// </summary>
+	public static double[] LightwarpChromaticity(byte[] rampRgba, int width, int height, double litStart = 0.4)
+	{
+		ArgumentNullException.ThrowIfNull(rampRgba);
+		if (width <= 0 || height <= 0 || rampRgba.Length < width * height * 4)
+			throw new InvalidDataException($"ramp 像素与尺寸不符：{width}×{height}，{rampRgba.Length} 字节。");
+
+		var from = Math.Clamp((int)Math.Round(Math.Clamp(litStart, 0, 1) * (width - 1)), 0, width - 1);
+		var midRow = height / 2;
+		double linR = 0, linG = 0, linB = 0;
+		var count = 0;
+		for (var x = from; x < width; x++)
+		{
+			var at = ((midRow * width) + x) * 4;
+			linR += SrgbByteToLinear(rampRgba[at]);
+			linG += SrgbByteToLinear(rampRgba[at + 1]);
+			linB += SrgbByteToLinear(rampRgba[at + 2]);
+			count++;
+		}
+
+		if (count == 0)
+			return [1.0, 1.0, 1.0];
+
+		linR /= count;
+		linG /= count;
+		linB /= count;
+		var peak = Math.Max(linR, Math.Max(linG, linB));
+		if (peak <= 1e-4)
+			return [1.0, 1.0, 1.0];
+
+		var outR = Math.Clamp(LinearToSrgbUnit(linR / peak), 0.5, 1.0);
+		var outG = Math.Clamp(LinearToSrgbUnit(linG / peak), 0.5, 1.0);
+		var outB = Math.Clamp(LinearToSrgbUnit(linB / peak), 0.5, 1.0);
+		return Math.Min(outR, Math.Min(outG, outB)) >= 0.995
+			? [1.0, 1.0, 1.0]
+			: [outR, outG, outB];
 	}
 
 	/// <summary>

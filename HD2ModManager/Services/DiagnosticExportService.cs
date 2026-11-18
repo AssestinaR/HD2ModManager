@@ -75,18 +75,26 @@ internal static class DiagnosticExportService
 			["gameNativeReport"] = CollectAsync(token => DiagnosticGameEvidence.ReadNativeReportsAsync(since, until, token), cancellationToken),
 		};
 		var luaRoot = LocalLuaRoot();
-		foreach (var name in new[] { "ArmorRegistryRuntime.log", "ArmorOverrideRuntime.log", "KitInstanceHider.log", "runtime.status", "bank-patch.status" })
+		var commonLuaRoot = CommonLuaRoot();
+		var externalLoaderConfigured = LuaDeploymentService.EffectiveMappingMode == ArmorMappingMode.ExternalLuaEntry
+			|| LuaDeploymentService.EffectivePhysicsMode == PhysicsMode.ExternalLuaEntry;
+		foreach (var name in new[] { "ArmorRegistryRuntime.log", "ArmorOverrideRuntime.log", "KitInstanceHider.log", "MDL-Boot.log", "runtime.status", "bank-patch.status" })
 		{
-			var sourcePath = luaRoot is null ? null : Path.Combine(luaRoot, name.EndsWith(".log", StringComparison.Ordinal) ? "Logs" : "ArmorRegistry", name);
-			sources.Add(name, CollectAsync(token => ReadLuaAsync(sourcePath, since, until, token), cancellationToken));
+			var isLog = name.EndsWith(".log", StringComparison.Ordinal);
+			var localPath = luaRoot is null ? null : Path.Combine(luaRoot, isLog ? "Logs" : "ArmorRegistry", name);
+			var commonPath = isLog && commonLuaRoot is not null ? Path.Combine(commonLuaRoot, "Logs", name) : null;
+			var sourcePath = isLog ? DiagnosticFiles.SelectNewestExistingPath(localPath, commonPath) : localPath;
+			var optionalExternalOnly = name == "MDL-Boot.log" && !externalLoaderConfigured;
+			sources.Add(name, CollectAsync(token => ReadLuaAsync(sourcePath, since, until, optionalExternalOnly, token), cancellationToken));
 		}
+		sources.Add("MDL3.log", CollectAsync(token => ReadMdl3LogAsync(since, until, token), cancellationToken));
 
 		await Task.WhenAll(sources.Values).ConfigureAwait(false);
 		cancellationToken.ThrowIfCancellationRequested();
 		var results = sources.ToDictionary(item => item.Key, item => item.Value.GetAwaiter().GetResult(), StringComparer.Ordinal);
 		var historyEvents = results["operationHistory"].Data as DiagnosticEvent[] ?? [];
 		var crashes = results["windowsEvents"].Data as List<DiagnosticGameEvidence.CrashEvent> ?? [];
-		var logFacts = new[] { "managerLog", "traceLog", "updateLog" }.SelectMany(key =>
+		var logFacts = new[] { "managerLog", "traceLog", "updateLog", "MDL3.log" }.SelectMany(key =>
 			(results[key].Data as IReadOnlyList<DiagnosticLogFact> ?? []).Select(fact => (Source: key, Fact: fact))).ToArray();
 		var legacy = logFacts.Select(item => (At: item.Fact.AtUtc ?? until, Row: (object)new { source = item.Source, item.Fact }));
 		var operations = historyEvents.Select(item => (At: item.AtUtc, Row: (object)new
@@ -360,10 +368,20 @@ internal static class DiagnosticExportService
 		return string.IsNullOrWhiteSpace(local) ? null : Path.Combine(local, "CowboyBingus", "Helldivers2");
 	}
 
-	private static async Task<DiagnosticSource> ReadLuaAsync(string? path, DateTimeOffset since, DateTimeOffset until, CancellationToken token)
+	private static string? CommonLuaRoot()
 	{
-		if (path is null) return new DiagnosticSource("missing");
-		DiagnosticFiles.GetLocalAttributes(path);
+		var common = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+		return string.IsNullOrWhiteSpace(common) ? null : Path.Combine(common, "CowboyBingus", "Helldivers2");
+	}
+
+	private static async Task<DiagnosticSource> ReadLuaAsync(string? path, DateTimeOffset since, DateTimeOffset until, bool notApplicableWhenMissing, CancellationToken token)
+	{
+		if (path is null) return new DiagnosticSource(notApplicableWhenMissing ? "notApplicable" : "missing");
+		try { DiagnosticFiles.GetLocalAttributes(path); }
+		catch (Exception exception) when (notApplicableWhenMissing && exception is FileNotFoundException or DirectoryNotFoundException)
+		{
+			return new DiagnosticSource("notApplicable", Reason: "ExternalLoaderNotConfigured");
+		}
 		var modified = new DateTimeOffset(File.GetLastWriteTimeUtc(path));
 		if (modified < since || modified > until) return new DiagnosticSource("noMatch", Reason: "ModificationOutsideWindow");
 		var isRuntimeStatus = Path.GetFileName(path) == "runtime.status";
@@ -376,6 +394,24 @@ internal static class DiagnosticExportService
 		var facts = DiagnosticLogParser.Lua(text, out int omitted);
 		var evidence = new LuaEvidence(modified, null, facts.TakeLast(80).ToArray(), facts.GroupBy(item => item.Code).ToDictionary(group => group.Key, group => group.Count()));
 		return new DiagnosticSource(facts.Count > 0 ? "collected" : "noMatch", evidence, facts.Count, "FileTimeOnly", truncated || facts.Count > 80, omitted);
+	}
+
+	private static async Task<DiagnosticSource> ReadMdl3LogAsync(DateTimeOffset since, DateTimeOffset until, CancellationToken token)
+	{
+		var common = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+		var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+		var path = DiagnosticFiles.SelectNewestExistingPath(
+			string.IsNullOrWhiteSpace(common) ? null : Path.Combine(common, "MDL3", "Logs", "MDL3.log"),
+			string.IsNullOrWhiteSpace(local) ? null : Path.Combine(local, "MDL3", "Logs", "MDL3.log"));
+		if (path is null) return new DiagnosticSource("notApplicable", Reason: "Mdl3LogNotPresent");
+		try { DiagnosticFiles.GetLocalAttributes(path); }
+		catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+		{
+			return new DiagnosticSource("notApplicable", Reason: "Mdl3LogNotPresent");
+		}
+		var (text, truncated) = await DiagnosticFiles.ReadTextAsync(path, DiagnosticBundleWriter.MaxSourceBytes, tail: true, token).ConfigureAwait(false);
+		var items = DiagnosticLogParser.Mdl3(text, since, until, out int omitted);
+		return new DiagnosticSource(items.Count == 0 ? "noMatch" : "collected", items, items.Count, Truncated: truncated, Omitted: omitted);
 	}
 
 	private static async Task<DiagnosticSource> ReadManagerLogsAsync(string root, string prefix, DateTimeOffset since, DateTimeOffset until, CancellationToken token)

@@ -857,7 +857,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		if (_unitVersionProducer is null)
 			return new ModInformationResult<ModUnitVersionFacts>(null, ModInformationStatus.Unavailable, ModInformationKind.UnitVersion, request.Generation, [new CoreIssue(CoreIssueSeverity.Warning, "UnitVersionUnavailable", "Unit version producer is not configured.", node.RelativePath, node.Id)]);
 		var nodeCancellation = BeginNodeRequest(node.Id);
-		var generation = request.Generation ?? ComputeNodeGeneration(node, modsRootDirectory);
+		var generation = request.Generation ?? ComputeEffectiveNodeGeneration(node, modsRootDirectory);
 		var effectiveRequest = request with { Generation = generation };
 		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
@@ -975,6 +975,22 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		if (!Directory.Exists(directory)) return string.Empty;
 		var builder = new System.Text.StringBuilder();
 		foreach (var path in ModNodePayloadLayout.EnumeratePayloadFiles(directory).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+		{
+			var info = new FileInfo(path);
+			var relative = Path.GetRelativePath(directory, path).Replace('\\', '/');
+			builder.Append(relative.ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks).AppendLine();
+		}
+		return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+	}
+
+	// UnitVersion inspects effective files (including Overwrite/), so its cache key must
+	// reflect Overwrite/ updates even when frozen root/sectional files stay unchanged.
+	private static string ComputeEffectiveNodeGeneration(ModNode node, string root)
+	{
+		var directory = Path.Combine(root, node.RelativePath);
+		if (!Directory.Exists(directory)) return string.Empty;
+		var builder = new System.Text.StringBuilder();
+		foreach (var path in ModNodePayloadLayout.EnumerateEffectiveFilesByName(directory).Values.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 		{
 			var info = new FileInfo(path);
 			var relative = Path.GetRelativePath(directory, path).Replace('\\', '/');

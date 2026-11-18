@@ -2135,7 +2135,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					node is null ? Path.GetFileName(item.ModDirectory.TrimEnd('\\', '/')) : node.Id.Value.ToString("N"),
 					item.ModDirectory,
 					// 只给映射到这个素体的 NPC 生成专用 unit；没映射（或取消了）就是空，编译产物里不留 NPC 资源。
-					SettingsService.CreateVpkHostContext() with
+					SettingsService.CreateVpkHostContext(item.Name) with
 					{
 						NpcItemIds = npcByModel.TryGetValue(item.ModelKey, out var mappedNpcs) ? [.. mappedNpcs.Order()] : [],
 					},

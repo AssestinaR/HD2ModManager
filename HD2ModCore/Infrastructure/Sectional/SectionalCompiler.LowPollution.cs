@@ -39,126 +39,212 @@ public static partial class SectionalCompiler
 		if (!plan.Supported)
 			return new LowPollutionOutcome(null, plan.Reason);
 
-		if (plan.NeedsMerge && (string.IsNullOrWhiteSpace(context.GameDataFolder) || !Directory.Exists(context.GameDataFolder)))
+		if (plan.NeedsMerge
+			&& context.MergeUnitOverride is null
+			&& (string.IsNullOrWhiteSpace(context.GameDataFolder) || !Directory.Exists(context.GameDataFolder)))
 		{
 			return new LowPollutionOutcome(
 				SectionalCompileResult.Failure("低污染模式要合并几何，需要读玩家头像骨架：请先在设置页指定游戏目录。"), null);
 		}
 
-		var preStaging = CreateStagingDirectory();
-		var staging = CreateStagingDirectory();
-		try
+		var effectiveDisabled = disabledSections;
+		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? updatedDisabled = null;
+		var overflowNotes = new List<string>();
+		UnitTransformInfo? avatar = null;
+
+		while (true)
 		{
-			var info = new List<string>();
-			var warnings = new List<string>();
-
-			// ① 先在来源副本上烘好关闭的 section（来源 unit 键空间，与自身素体、专属合并同一条路径），再合并几何。
-			//    合并之后 section 序号变了，不能再按来源键烘。
-			var pre = OverwritePatchInstaller.Install(preStaging, sourcePatch).PatchPath;
-			var preBuilt = await WardrobeSectionMapFile.BuildAsync(pre, cancellationToken).ConfigureAwait(false);
-			var preDocument = WardrobeSectionMapFile.ApplyUnitIdentities(
-				preBuilt.Document, SourceUnitIdentities(sourceMap, plan: null));
-			var preBaked = await WardrobeSectionBaker
-				.BakeAsync(pre, preDocument, disabledSections ?? EmptySections, cancellationToken)
-				.ConfigureAwait(false);
-			warnings.AddRange(preBaked.Warnings);
-
-			// ② 每个压缩槽：多成员合并（ID 所有者放最前），单成员原样改名到同一个 ID。
-			UnitTransformInfo? avatar = plan.NeedsMerge
-				? await SectionalUnitMerger.ReadAvatarAsync(context.GameDataFolder!, cancellationToken).ConfigureAwait(false)
-				: null;
-			var renames = new List<SectionalUnitRename>();
-			var merged = new List<SectionalMergedOutput>();
-			foreach (var group in plan.Groups)
+			var preStaging = CreateStagingDirectory();
+			var staging = CreateStagingDirectory();
+			SectionalCompressionRole currentGroupRole = SectionalCompressionRole.Body;
+			try
 			{
-				var key = UnitKey(group.UnitId);
-				if (group.Members.Count == 1)
+				var info = new List<string>(overflowNotes);
+				var warnings = new List<string>();
+
+				// ① 先在来源副本上烘好关闭的 section（来源 unit 键空间，与自身素体、专属合并同一条路径），再合并几何。
+				//    合并之后 section 序号变了，不能再按来源键烘。
+				var pre = OverwritePatchInstaller.Install(preStaging, sourcePatch).PatchPath;
+				var preBuilt = await WardrobeSectionMapFile.BuildAsync(pre, cancellationToken).ConfigureAwait(false);
+				var preDocument = WardrobeSectionMapFile.ApplyUnitIdentities(
+					preBuilt.Document, SourceUnitIdentities(sourceMap, plan: null));
+				var preBaked = await WardrobeSectionBaker
+					.BakeAsync(pre, preDocument, effectiveDisabled ?? EmptySections, cancellationToken)
+					.ConfigureAwait(false);
+				warnings.AddRange(preBaked.Warnings);
+
+				// ② 每个压缩槽：多成员合并（ID 所有者放最前），单成员原样改名到同一个 ID。
+				if (plan.NeedsMerge && context.MergeUnitOverride is null && avatar is null)
 				{
-					renames.Add(new SectionalUnitRename(group.UnitId, key));
-					continue;
+					avatar = await SectionalUnitMerger.ReadAvatarAsync(context.GameDataFolder!, cancellationToken).ConfigureAwait(false);
 				}
 
-				var unit = await SectionalUnitMerger
-					.MergeAsync(pre, new SectionalUnitMergeSpec([.. group.Members.Select(member => member.SourceUnitId)]), avatar!, cancellationToken)
-					.ConfigureAwait(false);
-				merged.Add(new SectionalMergedOutput([key], unit));
-			}
-
-			foreach (var member in plan.Passthrough)
-				renames.Add(new SectionalUnitRename(member.SourceUnitId, UnitKey(member.SourceUnitId)));
-
-			// 只为映射到这份头身合并素体的 NPC 生成专用 unit。整身优先从合体槽取，其次用头身合并躯干。
-			var npcVariants = new List<SectionalNpcVariant>();
-			var npcLayoutUnits = new List<(string Role, string Unit)>();
-			if (headMergeIntoBody && context.NpcItemIds.Count != 0)
-			{
-				var carrier = plan.Groups.Where(group => group.Role == SectionalCompressionRole.BodyArms).OrderBy(group => group.Body).FirstOrDefault()
-					?? plan.Groups.Where(group => group.Role == SectionalCompressionRole.HeadBody).OrderBy(group => group.Body).FirstOrDefault();
-				if (carrier is not null)
+				var renames = new List<SectionalUnitRename>();
+				var merged = new List<SectionalMergedOutput>();
+				foreach (var group in plan.Groups)
 				{
-					foreach (var npc in KitNpcRecords.All.Where(record => context.NpcItemIds.Contains(record.ItemId)))
+					currentGroupRole = group.Role;
+					var key = UnitKey(group.UnitId);
+					if (group.Members.Count == 1)
 					{
-						var variantId = npc.VariantUnitId(carrier.UnitId);
-						npcVariants.Add(new SectionalNpcVariant(carrier.UnitId, new AssetKey(PatchUnitMeshReader.UnitTypeId, variantId), npc));
-						npcLayoutUnits.Add((npc.VariantRole, variantId.ToString("x16", CultureInfo.InvariantCulture)));
+						renames.Add(new SectionalUnitRename(group.UnitId, key));
+						continue;
+					}
+
+					var spec = new SectionalUnitMergeSpec([.. group.Members.Select(member => member.SourceUnitId)]);
+					var unit = context.MergeUnitOverride is not null
+						? await context.MergeUnitOverride(pre, spec, cancellationToken).ConfigureAwait(false)
+						: await SectionalUnitMerger.MergeAsync(pre, spec, avatar!, cancellationToken).ConfigureAwait(false);
+					merged.Add(new SectionalMergedOutput([key], unit));
+				}
+
+				foreach (var member in plan.Passthrough)
+					renames.Add(new SectionalUnitRename(member.SourceUnitId, UnitKey(member.SourceUnitId)));
+
+				// 只为映射到这份头身合并素体的 NPC 生成专用 unit。整身优先从合体槽取，其次用头身合并躯干。
+				var npcVariants = new List<(SectionalNpcVariant Variant, string Role, string Unit)>();
+				if (headMergeIntoBody && context.NpcItemIds.Count != 0)
+				{
+					var carrier = plan.Groups.Where(group => group.Role == SectionalCompressionRole.BodyArms).OrderBy(group => group.Body).FirstOrDefault()
+						?? plan.Groups.Where(group => group.Role == SectionalCompressionRole.HeadBody).OrderBy(group => group.Body).FirstOrDefault();
+					if (carrier is not null)
+					{
+						foreach (var npc in KitNpcRecords.All.Where(record => context.NpcItemIds.Contains(record.ItemId)))
+						{
+							var variantId = npc.VariantUnitId(carrier.UnitId);
+							npcVariants.Add((
+								new SectionalNpcVariant(carrier.UnitId, new AssetKey(PatchUnitMeshReader.UnitTypeId, variantId), npc),
+								npc.VariantRole,
+								variantId.ToString("x16", CultureInfo.InvariantCulture)));
+						}
 					}
 				}
+
+				var patch = await SectionalUnitPatchWriter
+					.WriteAsync(
+						pre,
+						staging,
+						renames,
+						[],
+						new SourceUnitHiddenUnitSource(),
+						cancellationToken,
+						merged,
+						[.. npcVariants.Select(item => item.Variant)],
+						context.GameDataFolder)
+					.ConfigureAwait(false);
+				var staged = Path.Combine(staging, Path.GetFileName(pre));
+
+				// ③ 表按压缩后的 patch 重建；压缩 unit 的 ID 就是 ID 所有者的来源 ID，身份按 ID 直接对齐。
+				var built = await WardrobeSectionMapFile.BuildAsync(staged, cancellationToken).ConfigureAwait(false);
+				var documented = WardrobeSectionMapFile.ApplyUnitIdentities(
+					built.Document, SourceUnitIdentities(sourceMap, plan: null));
+				var baked = await WardrobeSectionBaker
+					.BakeAsync(staged, documented, EmptySections, cancellationToken)
+					.ConfigureAwait(false);
+
+				var materialized = OverwriteMaterializer.Materialize(
+					modDirectory, selection, staged, ManagedOverwriteMarkers.VpkRekey);
+				if (!materialized.Succeeded)
+					return new LowPollutionOutcome(SectionalCompileResult.Failure(materialized.Error ?? "物化生效层失败。"), null);
+
+				// 结构文件只能写在物化**之后**：物化器会重开目录。合并后序号已变，组表不写（读侧永远优先权威侧）。
+				// 合体 unit（规划 §17）不进结构表：它没有部位身份，只经映射行用到，详情页的部件列表里不该出现它。
+				var bodyArms = plan.Groups.Where(group => group.Role == SectionalCompressionRole.BodyArms)
+					.Select(group => group.UnitId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+				var structure = bodyArms.Count == 0
+					? documented
+					: documented with { Units = [.. documented.Units.Where(unit => !bodyArms.Contains(unit.FileId))] };
+				await WriteStructureAsync(modDirectory, structure, components: null, cancellationToken).ConfigureAwait(false);
+				WriteLowPollutionRegistry(modDirectory, payload, plan, warnings);
+				WriteLowPollutionLayout(
+					modDirectory,
+					plan,
+					LowPollutionFreshness.Fingerprint(payload, effectiveDisabled, headMergeIntoBody),
+					[.. npcVariants.Select(item => (item.Role, item.Unit))]);
+
+				info.Add(
+					$"低污染模式：素体压缩成 {plan.Groups.Count} 个 unit"
+					+ $"（{string.Join("、", plan.Groups.Select(group => $"{LowPollutionLayoutFile.RoleName(group.Role)}=0x{group.UnitId}"))}）；"
+					+ "合并后的部件不再支持就地开关 section，改勾选请再点一次重构建。");
+				if (plan.Passthrough.Count != 0)
+					info.Add($"{string.Join("、", plan.Passthrough.Select(member => ArmorStructure.Display(member.Part)))}的 unit 原样保留，没有并入压缩槽。");
+				warnings.AddRange(patch.Warnings);
+				warnings.AddRange(baked.Warnings);
+				warnings.AddRange(materialized.Warnings);
+
+				return new LowPollutionOutcome(
+					new SectionalCompileResult(
+						true, null, SectionalCompileKind.OwnModel, null, patch.RewrittenUnitCount, 0,
+						headMergeIntoBody ? SectionalHeadMergeOutcome.AppliedOwnModel : SectionalHeadMergeOutcome.Off,
+						0, info, warnings)
+					{
+						UpdatedDisabledSections = updatedDisabled,
+					},
+					null);
 			}
+			catch (SectionalMergeBufferOverflowException overflow)
+			{
+				var overflowContext = await SectionalMergeOverflowAnalyzer
+					.AnalyzeAsync(
+						modDirectory,
+						context.ModDisplayName,
+						payload,
+						sourcePatch,
+						RoleDisplayName(currentGroupRole),
+						overflow.SourceFileIds,
+						overflow.ActualBytes,
+						overflow.LimitBytes,
+						effectiveDisabled,
+						canFallbackToUnmerged: true,
+						cancellationToken)
+					.ConfigureAwait(false);
 
-			var patch = await SectionalUnitPatchWriter
-				.WriteAsync(pre, staging, renames, [], new SourceUnitHiddenUnitSource(), cancellationToken, merged, npcVariants, context.GameDataFolder)
-				.ConfigureAwait(false);
-			var staged = Path.Combine(staging, Path.GetFileName(pre));
+				if (context.OnMergeOverflow is null)
+				{
+					var reason = $"合并槽「{overflowContext.MergedSlotDisplayName}」单流缓冲区达到 {SectionalMergeOverflowAnalyzer.FormatMiB(overflow.ActualBytes)}，"
+						+ $"超过游戏 D3D12 单块 128.0 MiB 上限（{SectionalMergeOverflowAnalyzer.DescribeConflicts(overflowContext)}）";
+					return new LowPollutionOutcome(null, reason);
+				}
 
-			// ③ 表按压缩后的 patch 重建；压缩 unit 的 ID 就是 ID 所有者的来源 ID，身份按 ID 直接对齐。
-			var built = await WardrobeSectionMapFile.BuildAsync(staged, cancellationToken).ConfigureAwait(false);
-			var documented = WardrobeSectionMapFile.ApplyUnitIdentities(
-				built.Document, SourceUnitIdentities(sourceMap, plan: null));
-			var baked = await WardrobeSectionBaker
-				.BakeAsync(staged, documented, EmptySections, cancellationToken)
-				.ConfigureAwait(false);
+				var decision = await context.OnMergeOverflow(overflowContext, cancellationToken).ConfigureAwait(false);
+				switch (decision.Action)
+				{
+					case SectionalMergeOverflowAction.DisableSelectedGroups when decision.DisabledGroupIds.Count != 0:
+					{
+						var components = await SectionGroupFile.TryReadAsync(payload, cancellationToken).ConfigureAwait(false);
+						effectiveDisabled = SectionalMergeOverflowAnalyzer.ApplyDisabledGroups(
+							effectiveDisabled, components, decision.DisabledGroupIds);
+						updatedDisabled = effectiveDisabled;
+						var disabledNames = overflowContext.Groups
+							.Where(group => decision.DisabledGroupIds.Contains(group.GroupId, StringComparer.Ordinal))
+							.Select(group => group.DisplayName)
+							.ToArray();
+						if (disabledNames.Length != 0)
+						{
+							overflowNotes.Add($"已关闭多余组件（{string.Join("、", disabledNames)}），以保持合并单流在游戏 128 MiB 显存上限以内。");
+						}
 
-			var materialized = OverwriteMaterializer.Materialize(
-				modDirectory, selection, staged, ManagedOverwriteMarkers.VpkRekey);
-			if (!materialized.Succeeded)
-				return new LowPollutionOutcome(SectionalCompileResult.Failure(materialized.Error ?? "物化生效层失败。"), null);
-
-			// 结构文件只能写在物化**之后**：物化器会重开目录。合并后序号已变，组表不写（读侧永远优先权威侧）。
-			// 合体 unit（规划 §17）不进结构表：它没有部位身份，只经映射行用到，详情页的部件列表里不该出现它。
-			var bodyArms = plan.Groups.Where(group => group.Role == SectionalCompressionRole.BodyArms)
-				.Select(group => group.UnitId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-			var structure = bodyArms.Count == 0
-				? documented
-				: documented with { Units = [.. documented.Units.Where(unit => !bodyArms.Contains(unit.FileId))] };
-			await WriteStructureAsync(modDirectory, structure, components: null, cancellationToken).ConfigureAwait(false);
-			WriteLowPollutionRegistry(modDirectory, payload, plan, warnings);
-			WriteLowPollutionLayout(modDirectory, plan, LowPollutionFreshness.Fingerprint(payload, disabledSections, headMergeIntoBody), npcLayoutUnits);
-
-			info.Add(
-				$"低污染模式：素体压缩成 {plan.Groups.Count} 个 unit"
-				+ $"（{string.Join("、", plan.Groups.Select(group => $"{LowPollutionLayoutFile.RoleName(group.Role)}=0x{group.UnitId}"))}）；"
-				+ "合并后的部件不再支持就地开关 section，改勾选请再点一次重构建。");
-			if (plan.Passthrough.Count != 0)
-				info.Add($"{string.Join("、", plan.Passthrough.Select(member => ArmorStructure.Display(member.Part)))}的 unit 原样保留，没有并入压缩槽。");
-			warnings.AddRange(patch.Warnings);
-			warnings.AddRange(baked.Warnings);
-			warnings.AddRange(materialized.Warnings);
-
-			return new LowPollutionOutcome(
-				new SectionalCompileResult(
-					true, null, SectionalCompileKind.OwnModel, null, patch.RewrittenUnitCount, 0,
-					headMergeIntoBody ? SectionalHeadMergeOutcome.AppliedOwnModel : SectionalHeadMergeOutcome.Off,
-					0, info, warnings),
-				null);
-		}
-		catch (Exception exception) when (IsExpected(exception))
-		{
-			return new LowPollutionOutcome(SectionalCompileResult.Failure("低污染模式编译失败：" + exception.Message), null);
-		}
-		finally
-		{
-			DeleteQuietly(staging);
-			DeleteQuietly(preStaging);
+						continue;
+					}
+					case SectionalMergeOverflowAction.FallbackToUnmerged:
+						return new LowPollutionOutcome(
+							null,
+							$"合并槽「{overflowContext.MergedSlotDisplayName}」达到 {SectionalMergeOverflowAnalyzer.FormatMiB(overflow.ActualBytes)}（超过 128.0 MiB 上限），已按选择保留全部组件并退回非合并模式");
+					default:
+						return new LowPollutionOutcome(
+							SectionalCompileResult.Failure("已取消编译：合并模型超出游戏 D3D12 单流 128 MiB 显存块上限。"),
+							null);
+				}
+			}
+			catch (Exception exception) when (IsExpected(exception))
+			{
+				return new LowPollutionOutcome(SectionalCompileResult.Failure("低污染模式编译失败：" + exception.Message), null);
+			}
+			finally
+			{
+				DeleteQuietly(staging);
+				DeleteQuietly(preStaging);
+			}
 		}
 	}
 
@@ -232,6 +318,16 @@ public static partial class SectionalCompiler
 		SectionalCompressionRole.Head => [ArmorPart.Helmet],
 		SectionalCompressionRole.Arms => SectionalCompressionPlanner.ArmPartOrder,
 		_ => SectionalCompressionPlanner.BodyPartOrder,
+	};
+
+	private static string RoleDisplayName(SectionalCompressionRole role) => role switch
+	{
+		SectionalCompressionRole.BodyArms => "身体+手臂合体槽",
+		SectionalCompressionRole.HeadBody => "头+身体合并槽",
+		SectionalCompressionRole.Body => "身体槽",
+		SectionalCompressionRole.Arms => "手臂槽",
+		SectionalCompressionRole.Head => "头盔槽",
+		_ => LowPollutionLayoutFile.RoleName(role),
 	};
 
 	private static void WriteLowPollutionLayout(

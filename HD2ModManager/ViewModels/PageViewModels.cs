@@ -346,13 +346,120 @@ namespace HD2ModManager.ViewModels
                     return;
                 }
 
+                var storageKindResolver = CoreServices.CreateModStorageKindResolver();
+                var legacyNodes = nodes
+                    .Where(node => !RebuildTargetScope.IsSectionalSeries(Path.Combine(_library.ModsRootDirectory, node.RelativePath), storageKindResolver))
+                    .ToArray();
+                var sectionalNodes = nodes
+                    .Where(node => RebuildTargetScope.IsSectionalSeries(Path.Combine(_library.ModsRootDirectory, node.RelativePath), storageKindResolver))
+                    .ToArray();
+
                 ModRepairBatchResult? result = null;
-                if (nodes.Count > 0)
+                if (legacyNodes.Length > 0)
                 {
                     task.UpdateStage("正在生成并验证重构候选");
                     task.UpdateProgress(null);
-                    result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new InlineProgress<OperationProgressEvent>(bridge.Apply), operationId);
+                    result = await _repairBatch.RepairAsync(legacyNodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new InlineProgress<OperationProgressEvent>(bridge.Apply), operationId);
                     task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}；取消 {result.CanceledModCount}；未开始 {result.NotStartedModCount}");
+                }
+
+                var sectionalRepairedMods = 0;
+                var sectionalFailedMods = 0;
+                var sectionalCanceledMods = 0;
+                var sectionalNotStartedMods = 0;
+                var modelFailureNotes = new List<string>();
+                if (result is not null)
+                {
+                    foreach (var item in result.Mods.Where(mod => mod.Status is ModRepairBatchModStatus.CandidateFailed or ModRepairBatchModStatus.CommitFailed))
+                        modelFailureNotes.Add($"{item.Name}：{item.Detail ?? "重构失败"}");
+                }
+
+                if (sectionalNodes.Length > 0)
+                {
+                    var baseVpkContext = SettingsService.CreateVpkHostContext() with { GameDataFolder = gameData };
+                    for (var index = 0; index < sectionalNodes.Length; index++)
+                    {
+                        var sectionalNode = sectionalNodes[index];
+                        var vpkContext = baseVpkContext with { ModDisplayName = sectionalNode.Metadata.Name };
+                        if (task.CancellationToken.IsCancellationRequested)
+                        {
+                            sectionalNotStartedMods += sectionalNodes.Length - index;
+                            break;
+                        }
+
+                        var sectionalDir = Path.Combine(_library.ModsRootDirectory, sectionalNode.RelativePath);
+                        var kind = storageKindResolver.Resolve(sectionalDir);
+                        task.UpdateStage($"正在重构建分段式 Mod {index + 1}/{sectionalNodes.Length}：{sectionalNode.Metadata.Name}");
+                        task.UpdateProgress((double)(index + 1) / sectionalNodes.Length);
+                        try
+                        {
+                            bool ok;
+                            string? error;
+                            IReadOnlyList<string> notes;
+                            if (kind == ModStorageKind.Sectional)
+                            {
+                                var outcome = await Legacy2SectionalConverter.RunAsync(
+                                    sectionalNode.Id.Value.ToString("N"),
+                                    sectionalDir,
+                                    vpkContext,
+                                    stage => task.UpdateStage($"{sectionalNode.Metadata.Name}：{stage}"),
+                                    task.CancellationToken);
+                                ok = outcome.Ok;
+                                error = outcome.Error;
+                                notes = outcome.Notes;
+                            }
+                            else
+                            {
+                                var outcome = await VpkRebuildService.RunAsync(
+                                    sectionalNode.Id.Value.ToString("N"),
+                                    sectionalDir,
+                                    vpkContext,
+                                    targetArchiveIds: null,
+                                    disabledSections: null,
+                                    stage => task.UpdateStage($"{sectionalNode.Metadata.Name}：{stage}"),
+                                    task.CancellationToken);
+                                ok = outcome.Ok;
+                                error = outcome.Error;
+                                notes = outcome.Notes;
+                            }
+
+                            await _library.InvalidateContentNodeAsync(sectionalNode.Id, CancellationToken.None);
+                            if (!ok)
+                            {
+                                sectionalFailedMods++;
+                                modelFailureNotes.Add($"{sectionalNode.Metadata.Name}：{error ?? "分段式重构建失败"}");
+                                continue;
+                            }
+
+                            var rechecked = await _library.InformationCenter.RequestUnitVersionAsync(
+                                sectionalNode,
+                                _library.ModsRootDirectory,
+                                new ModInformationRequest(ModInformationKind.UnitVersion, "PostSectionalRepairCheck", RequireFresh: true),
+                                CancellationToken.None);
+                            if (rechecked.Data?.Report.IsOutdated == false)
+                            {
+                                sectionalRepairedMods++;
+                            }
+                            else
+                            {
+                                sectionalFailedMods++;
+                                var detail = notes.Count > 0
+                                    ? string.Join("；", notes.Take(2))
+                                    : "重构建后仍包含旧版 Unit。";
+                                modelFailureNotes.Add($"{sectionalNode.Metadata.Name}：{detail}");
+                            }
+                        }
+                        catch (OperationCanceledException) when (task.CancellationToken.IsCancellationRequested)
+                        {
+                            sectionalCanceledMods++;
+                        }
+                        catch (Exception sectionalException)
+                        {
+                            sectionalFailedMods++;
+                            modelFailureNotes.Add($"{sectionalNode.Metadata.Name}：{sectionalException.Message}");
+                            LogService.Warn($"分段式 Mod 修复失败 {sectionalNode.Metadata.Name}：{sectionalException.Message}");
+                        }
+                    }
                 }
 
                 var audioRepairedMods = 0;
@@ -385,28 +492,40 @@ namespace HD2ModManager.ViewModels
                     }
                 }
 
-                if (result is not null && (result.CanceledModCount > 0 || result.NotStartedModCount > 0) || task.CancellationToken.IsCancellationRequested) task.MarkCanceled();
+                var totalRepairedModels = (result?.RepairedModCount ?? 0) + sectionalRepairedMods;
+                var totalSkippedModels = result?.SkippedModCount ?? 0;
+                var totalFailedModels = (result?.FailedModCount ?? 0) + sectionalFailedMods;
+                var totalCanceledModels = (result?.CanceledModCount ?? 0) + sectionalCanceledMods;
+                var totalNotStartedModels = (result?.NotStartedModCount ?? 0) + sectionalNotStartedMods;
+                var hasModelRepairs = (result?.HasRepairs == true) || sectionalRepairedMods > 0;
+
+                if (totalCanceledModels > 0 || totalNotStartedModels > 0 || task.CancellationToken.IsCancellationRequested) task.MarkCanceled();
                 else task.MarkCompleted();
-                if (audioRepairedMods > 0 && result?.HasRepairs != true)
+                if (audioRepairedMods > 0 && !hasModelRepairs)
                 {
                     // 音效补丁同样是原地替换了 Mod 目录中的文件，指纹必须同步，否则下次启动会被当成外部修改。
-                    await _library.SynchronizeAsync(task.CancellationToken);
+                    await _library.SynchronizeAsync(CancellationToken.None);
                     if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
                 }
-                if (result is not null && result.HasRepairs)
+                if (hasModelRepairs)
                 {
                     // 修复过程直接替换了 Mod 目录中的 Patch；必须同步并持久化新的 ContentFingerprint，
                     // 否则下次启动会把本次已知修改误判为外部修改并删除所有信息中心缓存。
-                    await _library.SynchronizeAsync(task.CancellationToken);
+                    await _library.SynchronizeAsync(CancellationToken.None);
                     task.UpdateStage("正在使用修复后的来源重建已启用装饰");
-                    var rebuiltHosts = await _library.RebuildAllActiveDecorationOverwritesAsync(task.CancellationToken);
+                    var rebuiltHosts = await _library.RebuildAllActiveDecorationOverwritesAsync(CancellationToken.None);
                     LogService.Info($"一键修复后已重建装饰 Overwrite：主体数={rebuiltHosts}。");
                     if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
-                    ClearOutdatedDetectionResult();
+                    if (totalFailedModels == 0 && totalCanceledModels == 0 && totalNotStartedModels == 0)
+                        ClearOutdatedDetectionResult();
+                    else
+                        SetOutdatedDetectionResult(totalFailedModels + totalCanceledModels + totalNotStartedModels, unreadableCount);
                 }
                 var report = new System.Text.StringBuilder("批次完成。");
-                if (result is not null)
-                    report.Append($"\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n取消：{result.CanceledModCount}\n未开始：{result.NotStartedModCount}");
+                if (nodes.Count > 0)
+                    report.Append($"\n已修复：{totalRepairedModels}\n跳过：{totalSkippedModels}\n失败：{totalFailedModels}\n取消：{totalCanceledModels}\n未开始：{totalNotStartedModels}");
+                if (modelFailureNotes.Count > 0)
+                    report.Append("\n\n模型修复失败详情：\n" + string.Join("\n", modelFailureNotes.Take(5)) + (modelFailureNotes.Count > 5 ? $"\n…另有 {modelFailureNotes.Count - 5} 条" : string.Empty));
                 if (repairableAudioNodes.Length > 0)
                     report.Append($"\n音效已重建：{audioRepairedMods} 个 Mod" + (audioFailedMods > 0 ? $"；失败：{audioFailedMods}" : string.Empty));
                 if (audioFailureNotes.Count > 0)
@@ -414,8 +533,13 @@ namespace HD2ModManager.ViewModels
                 if (audioFallbackNotes.Count > 0)
                     report.Append("\n\n以下音库已退回官方版本（Mod 音色失效）：\n" + string.Join("\n", audioFallbackNotes.Take(5)) + (audioFallbackNotes.Count > 5 ? $"\n…另有 {audioFallbackNotes.Count - 5} 条" : string.Empty));
                 if (audioRepairedMods > 0) report.Append($"\n\n音效备份：{audioBackupRoot}\n需要重新部署后，游戏里才会生效。");
-                if (result is not null) report.Append($"\n\n备份与审计清单：{result.BatchDirectory}");
-                var failed = (result?.FailedModCount ?? 0) + audioFailedMods;
+                if (result is not null)
+                {
+                    if (result.Mods.Any(item => item.BackupCompleted))
+                        report.Append($"\n\n备份目录：{result.BatchDirectory}");
+                    report.Append($"\n审计清单：{result.ManifestPath}");
+                }
+                var failed = totalFailedModels + audioFailedMods;
                 HD2ModManager.Views.AppDialog.Show(report.ToString(), "一键修复", System.Windows.MessageBoxButton.OK, failed == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
             }
             catch (OperationCanceledException)

@@ -305,6 +305,62 @@ public sealed class ModRepairBatchServiceTests
         Assert.Equal(2, events.Count(e => e.Kind == OperationKind.RepairBatchItem && e.IsTerminal));
     }
 
+    [Fact]
+    public async Task RepairsReadOnlyPatch_AndPreservesCompanionMaterialPatchGroup()
+    {
+        using var fixture = new Fixture();
+        var node = new ModNode(ModNodeId.New(), "multi-readonly", new ModNodeMetadata("multi-readonly", null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
+        var dir = Path.Combine(fixture.ModsRoot, "multi-readonly");
+        Directory.CreateDirectory(dir);
+        var unitPatch = Path.Combine(dir, "9ba626afa44a3aa3.patch_0");
+        var materialPatch = Path.Combine(dir, "9ba626afa44a3aa3.patch_1");
+        File.WriteAllText(unitPatch, "old-unit");
+        File.SetAttributes(unitPatch, File.GetAttributes(unitPatch) | FileAttributes.ReadOnly);
+        File.WriteAllText(materialPatch, "material-payload");
+
+        fixture.Reconstruction.InspectResult = ReadyState(node);
+        fixture.Reconstruction.CandidateFactory = (_, _, _, output, _, _, _) =>
+        {
+            Directory.CreateDirectory(output);
+            File.WriteAllText(Path.Combine(output, "9ba626afa44a3aa3.patch_0"), "repaired-unit");
+            return ValueTask.FromResult(new SameKeyReconstructionOperationResult(true, output, null, null, 1, 1, 0, 0, 0, Array.Empty<CoreIssue>()));
+        };
+
+        var realParser = new PatchFileNameParser();
+        var service = new ModRepairBatchService(new StoragePaths(fixture.RootPath), fixture.Reconstruction, realParser, informationCenter: fixture.InformationCenter);
+        var result = await service.RepairAsync(new[] { node }, fixture.ModsRoot, fixture.GameData);
+
+        Assert.Equal(ModRepairBatchModStatus.Repaired, Assert.Single(result.Mods).Status);
+        Assert.Equal("repaired-unit", File.ReadAllText(unitPatch));
+        Assert.True(File.Exists(materialPatch));
+        Assert.Equal("material-payload", File.ReadAllText(materialPatch));
+    }
+
+    [Fact]
+    public async Task SkipsSectionalSeriesMod_WithoutTouchingFrozenRootPatch()
+    {
+        using var fixture = new Fixture();
+        var node = new ModNode(ModNodeId.New(), "sectional-mod", new ModNodeMetadata("sectional-mod", null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
+        var dir = Path.Combine(fixture.ModsRoot, "sectional-mod");
+        Directory.CreateDirectory(dir);
+        Directory.CreateDirectory(Path.Combine(dir, "sectional"));
+        var frozenRootPatch = Path.Combine(dir, "9ba626afa44a3aa3.patch_0");
+        File.WriteAllText(frozenRootPatch, "frozen-legacy-source");
+        File.WriteAllText(Path.Combine(dir, "sectional", "9ba626afa44a3aa3.patch_0"), "sectional-payload");
+
+        var storagePaths = new StoragePaths(fixture.RootPath);
+        await using var reader = CoreServices.CreateModInformationReader();
+        var realReconstruction = CoreServices.CreateModSameKeyReconstructionService(storagePaths, reader);
+        var service = new ModRepairBatchService(storagePaths, realReconstruction, new PatchFileNameParser(), informationCenter: fixture.InformationCenter);
+
+        var result = await service.RepairAsync(new[] { node }, fixture.ModsRoot, fixture.GameData);
+
+        var item = Assert.Single(result.Mods);
+        Assert.Equal(ModRepairBatchModStatus.SkippedNotRepairable, item.Status);
+        Assert.Contains("Sectional", item.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("frozen-legacy-source", File.ReadAllText(frozenRootPatch));
+    }
+
     private static ModSameKeyReconstructionState ReadyState(ModNode source) => new(source.Id, "source.toc", new SameKeyReconstructionPlan(new("source.toc", "game"), new[] { new SameKeyUnitReconstructionPlan(default, new PatchTocEntry(default, "source", "source.patch"), null, Array.Empty<ArchiveMetadata>(), null, Array.Empty<CoreIssue>()) }, Array.Empty<CoreIssue>()), true, 1, 0, 0, 0, 0, Array.Empty<CoreIssue>());
 
     private static void AssertManifest(ModRepairBatchResult result)
@@ -318,6 +374,7 @@ public sealed class ModRepairBatchServiceTests
     private sealed class Fixture : IDisposable
     {
         private readonly string root = Path.Combine(Path.GetTempPath(), "hd2-repair-tests", Guid.NewGuid().ToString("N"));
+        public string RootPath => root;
         public readonly string ModsRoot; public readonly string GameData; public readonly CancellationTokenSource Cancellation = new();
         public readonly FakeReconstruction Reconstruction = new();
         public readonly FakeParser Parser = new();
@@ -340,7 +397,18 @@ public sealed class ModRepairBatchServiceTests
             if (!Directory.Exists(Path.Combine(root, "backups"))) return;
             foreach (var directory in Directory.GetDirectories(Path.Combine(root, "backups"))) Directory.Delete(directory, true);
         }
-        public void Dispose() { Cancellation.Dispose(); try { Directory.Delete(root, true); } catch { } }
+        public void Dispose()
+        {
+            Cancellation.Dispose();
+            try
+            {
+                if (Directory.Exists(root))
+                    foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+                        File.SetAttributes(file, FileAttributes.Normal);
+                Directory.Delete(root, true);
+            }
+            catch { }
+        }
     }
 
     private sealed class CollectingProgress(List<OperationProgressEvent> events) : IProgress<OperationProgressEvent>
