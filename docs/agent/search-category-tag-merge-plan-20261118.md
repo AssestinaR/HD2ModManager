@@ -412,5 +412,64 @@ Manager 没有测试工程，而这次的风险几乎全在"状态归约"。把�
 副作用（照实说）：把某个来源名下**最后一条**映射挪走之后，那个来源会从左侧列表里消失——
 它本来就只靠映射存在（和「解除映射目标」同一个后果），不是本次新引入的。
 
+---
+
+## 12. 护甲映射：层 2 加"来源表"（P1，已落地）
+
+### 12.1 问题定性
+
+层 2 的文档结构（`RuntimeArmorRegistryDocument`）原来只有 `Mappings / Models / PieceOverrides / TargetModes`，
+**没有"来源"这张表**：一个游戏条目作为视觉来源，只以 `Mapping.SourceItemId` 的形式存在。于是
+
+- 把一个护甲设为来源、还没配目标 → 保存后什么都不剩，重开就没了（`pendingProviderIds` 只在内存里）；
+- 删掉某个来源的最后一个目标 → 来源随之蒸发；
+- 而自定义素体没有这些问题，因为它们在 `Models[]` 里有独立记录。
+
+结论：**来源必须是独立的一等数据**，和素体享受同一份待遇。
+
+### 12.2 改动
+
+- `RuntimeArmorRegistryDocument` 新增 `SourceItems`（`uint[]`）；对外读用 **`SourceItemIds` 纯计算属性**。
+  为什么不做成 `ModelDefinitions` 那种 init 缓存：那张表必须显式重建，`with { Models = … }` 会带着旧值复制过去
+  （同一个坑已经踩过两次，注释写在两个文件里）；这里从结构上不支持那个错误。
+- 工作区 JSON：`sourceItems` 是新字段，**空表写成 null**（`WhenWritingNull` 整个省掉属性）——
+  文件里"没有这张表"和"表是空的"长得一样，读回来看有没有映射可反推。
+- 迁移：读到旧文件（字段缺失）时，用 `Mappings.Where(SourceItemId is not null)` 反推一次；
+  素体映射的 `sourceItemId` 为空，天然排除。"已提升为来源但一个目标都没有"的旧数据本来就没落盘，救不回来。
+- `pendingProviderIds` 整个删除（11 处引用），语义并入 `sourceItemIds`；
+  `ProviderStillExists` 改成"在来源表里 / 有映射 / 是素体"三者之一。
+- **刷新不再清空来源**：旧实现每次快照刷新都 `pendingProviderIds.Clear()`，正是"刚提升、还没配目标"被吞的原因；
+  现在整表重读以磁盘为准，后台刷新只做并集。
+- 新建映射后**不再**把来源从表里摘掉（来源是独立存在的）；
+  解除来源 = 从来源表里摘掉 + 删它的映射（不变）。
+- 应用（`ApplyAsync`）与读快照（合并素体）两处都是**整条重建文档**，都必须带上 `current.SourceItemIds`。
+  这两处第一版都漏了，被新单测当场抓住（见 12.4）。
+
+### 12.3 已知边界（不处理，按"忠诚翻译"）
+
+- 工作区 JSON 用 `JsonUnmappedMemberHandling.Disallow`：**旧版管理器读新文件会把它当成损坏并隔离**。
+  这是既有的前向不兼容行为，任何字段新增都一样；不做额外兼容层。
+- 一个条目既当来源、又当别的来源的映射目标：层 2 允许，游戏内也接受。不检测、不拦、不修复。
+- 来源表的变化本身不改变 `HasChanges`（它没有运行时效果，协议里只有 `model=`/`mapping=` 两种行），
+  但会自动保存进工作区。
+
+### 12.4 验证
+
+- 新增 `HD2ModCore.Tests/ArmorRegistrySourceTableTests`（4 项）：
+  无映射的来源表往返 / 旧文件反推 / 空表不写且读回为空 / 素体保留式保存不丢来源表。
+- `ArmorRegistrySelectionScopeArchitectureTests.TargetCardStaysOpenWhileTheSourceStillExists` 里
+  对 `pendingProviderIds.Contains` 的源码断言改成 `sourceItemIds.Contains`（判据不变，只是字段换名）。
+- 构建 0 警告 0 错误；全量测试 **2593 通过 / 1 失败**（仍是 `ArmorMappingPickerPlannerTests` 的真实游戏数据套数，
+  环境相关、与本次无关）；真实库冒烟启动正常。
+- 用户当前的真实工作区：268 条映射**全是素体映射**、11 个素体、0 个游戏来源 ⇒ 迁移后来源表为空，行为不变。
+
+### 12.5 下一步（未做）
+
+- **P2 右侧单表**：`availableChoicesByTab` 四张投影 → 一张行表（`IsSource` / `MappedTo` / `IsHidden`），
+  删 `mapped:` 伪键与 `mappedChoicesByKey`；「已映射」退回成"显示被占用的行"的可见性开关；筛选标签只筛选。
+- **P3 降级与确认**：把左侧来源拖进某来源的目标列表 = 降级（释放它自己的目标）；
+  名下目标数 ≥1 时汇总弹窗（每行一句"「X」已经作为来源并映射了 n 个对象" + 一句"重定向将会使这些条目被释放"），
+  确定则一起降级，取消则只跳过这几个、其余"干净"的照做。
+
 
 

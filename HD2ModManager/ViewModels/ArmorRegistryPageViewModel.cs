@@ -59,7 +59,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private readonly HashSet<ArmorMappingPickerTab> selectedPickerTabs = new();
 	private uint? selectedProviderId;
 	private IReadOnlyList<uint> selectedProviderMemberIds = [];
-	private readonly HashSet<uint> pendingProviderIds = [];
+	// 层 2 的"来源表"（游戏条目里被显式指定为视觉来源的那些）。和自定义素体一样：
+	// **来源独立存在，不依赖它上面有没有目标**——所以它必须落盘（document.SourceItemIds），
+	// 也正因为如此，删掉某个来源的最后一个目标不会再让它从左侧消失。
+	private readonly HashSet<uint> sourceItemIds = [];
 	private IReadOnlyList<RuntimeArmorCatalogEntry> cachedCatalog = [];
 	private ArmorTwinIndex cachedTwinIndex = ArmorTwinIndex.Empty;
 	private string? notifiedAutoCompletedTwinFingerprint;
@@ -822,9 +825,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				ResolveChoice(mapping.TargetItemId),
 				ResolveChoice(sourceItemId)));
 		}
+		// 来源表来自层 2（document.SourceItemIds）。整表重读时完全以磁盘为准；
+		// 后台刷新只做**并集**——否则"刚提升为来源、还没落盘"的那一下就被一次刷新吞掉了
+		// （旧实现每次刷新都 pendingProviderIds.Clear()，正是那个 bug）。
+		if (resetNavigation) sourceItemIds.Clear();
+		foreach (var sourceItemId in snapshot.Document.SourceItemIds) sourceItemIds.Add(sourceItemId);
+
 		if (resetNavigation)
 		{
-			pendingProviderIds.Clear();
 			selectedProviderId = null;
 			selectedProviderMemberIds = [];
 			OnPropertyChanged(nameof(IsProviderDetailOpen));
@@ -837,7 +845,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			// Never close the target card just because the source has no targets yet: an empty
 			// card with a back button is honest, a card that closes itself is a trap.
 			var keepProvider = selectedProviderId is { } openProviderId && ProviderStillExists(openProviderId);
-			pendingProviderIds.Clear();
 			if (!keepProvider)
 			{
 				selectedProviderId = null;
@@ -1124,10 +1131,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 
 
-	// 这个来源还在不在？三种存在形式：待建（pending）、已有映射、或本身就是注册素体。
-	// 判据里刻意不看"有没有映射"——没有映射的待建来源同样必须留在列表里。
+	// 这个来源还在不在？三种存在形式：来源表里、已有映射、或本身就是注册素体。
+	// 判据里刻意不看"有没有映射"——没有映射的来源同样必须留在列表里（这就是来源表存在的意义）。
 	private bool ProviderStillExists(uint providerItemId)
-		=> pendingProviderIds.Contains(providerItemId)
+		=> sourceItemIds.Contains(providerItemId)
 			|| Mappings.Any(mapping => mapping.Source.ItemId == providerItemId)
 			|| CustomModels.Any(model => SyntheticModelItemId(model.Key) == providerItemId);
 
@@ -1194,7 +1201,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var ids = items.SelectMany(item => item.ProviderSourceItemIds).Distinct().ToArray();
 		if (ids.Length == 0 || ids.Any(id => !Choices.ContainsKey(id))) return;
 		foreach (var id in ids)
-			pendingProviderIds.Add(id);
+			sourceItemIds.Add(id);
 		RebuildProjections();
 		RecomputeHasChanges();
 		selection.Clear();
@@ -1321,7 +1328,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			if (items.Length > 1)
 			{
 				foreach (var id in providerSourceIds)
-					pendingProviderIds.Add(id);
+					sourceItemIds.Add(id);
 				RebuildProjections();
 				RecomputeHasChanges();
 				selection.Clear();
@@ -1329,7 +1336,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			}
 
 			foreach (var id in providerSourceIds)
-				pendingProviderIds.Add(id);
+				sourceItemIds.Add(id);
 			selectedProviderId = providerSourceIds[0];
 			selectedProviderMemberIds = providerSourceIds;
 			OnPropertyChanged(nameof(IsProviderDetailOpen));
@@ -1400,9 +1407,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				TimeSpan.FromSeconds(8),
 				"护甲映射");
 		}
-		foreach (var sourceId in sourceIds)
-			if (ids.Any(id => Mappings.Any(mapping => mapping.Source.ItemId == sourceId && mapping.Target.ItemId == id)))
-				pendingProviderIds.Remove(sourceId);
 		RebuildProjections();
 		RecomputeHasChanges();
 		selection.Clear();
@@ -1519,7 +1523,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			var removed = Mappings.Where(mapping => selectedSources.Contains(mapping.Source.ItemId)).ToArray();
 			foreach (var mapping in removed) Mappings.Remove(mapping);
-			foreach (var sourceId in selectedSources) pendingProviderIds.Remove(sourceId);
+			foreach (var sourceId in selectedSources) sourceItemIds.Remove(sourceId);
 			if (selectedProviderMemberIds.Any(selectedSources.Contains)) CloseProvider();
 		}
 		else
@@ -1528,7 +1532,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			foreach (var mapping in removed) Mappings.Remove(mapping);
 			if (selectedProviderId is not null
 				&& selectedProviderMemberIds.All(currentSource =>
-					!pendingProviderIds.Contains(currentSource)
+					!sourceItemIds.Contains(currentSource)
 					&& !Mappings.Any(mapping => mapping.Source.ItemId == currentSource)))
 				CloseProvider();
 		}
@@ -1540,7 +1544,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private void RebuildProjections()
 	{
 		var sourceIds = Mappings.Select(mapping => mapping.Source.ItemId)
-			.Concat(pendingProviderIds)
+			.Concat(sourceItemIds)
 			.Concat(CustomModels.Select(model => SyntheticModelItemId(model.Key)))
 			.ToHashSet();
 
@@ -2011,7 +2015,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			mappings,
 			CustomModels.Select(model => model.ToDomain()).ToArray(),
 			pieceOverrides,
-			targetModes);
+			targetModes,
+			SourceItems: sourceItemIds.OrderBy(id => id).ToArray());
 	}
 
 
@@ -2075,7 +2080,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		CustomModels.Remove(model);
 		Choices.Remove(syntheticId);
 		foreach (var mapping in removed) Mappings.Remove(mapping);
-		pendingProviderIds.Remove(syntheticId);
 		pieceOverrides = pieceOverrides.Where(item => !released.Contains(item.OwnerItemId)).ToArray();
 		targetModes = targetModes.Where(item => !released.Contains(item.TargetItemId)).ToArray();
 		selection.Clear();
@@ -2378,7 +2382,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			baselineEnabled = Enabled;
 			baselineMappings = GetMappingKeys();
 			HasChanges = false;
-			pendingProviderIds.Clear();
 			if (selectedProviderId is not null && !selectedProviderMemberIds.Any(sourceIds.Contains))
 			{
 				selectedProviderId = null;
@@ -2526,7 +2529,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			var syntheticId = SyntheticModelItemId(key);
 			if (selectedProviderId == syntheticId) CloseProvider();
-			pendingProviderIds.Remove(syntheticId);
 		}
 		foreach (var mapping in removed) Mappings.Remove(mapping);
 		targetModes = targetModes.Where(item => !released.Contains(item.TargetItemId)).ToArray();

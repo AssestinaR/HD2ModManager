@@ -160,7 +160,8 @@ public sealed class RuntimeArmorRegistryService
 			[.. document.ModelDefinitions, .. external],
 			document.PieceOverrideDefinitions,
 			document.TargetModeDefinitions,
-			document.CompositionMode);
+			document.CompositionMode,
+			document.SourceItemIds);
 		await SaveWorkspaceAsync(merged, cancellationToken).ConfigureAwait(false);
 		return merged;
 	}
@@ -417,7 +418,9 @@ public sealed class RuntimeArmorRegistryService
 				merged.Values.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray(),
 				document.PieceOverrideDefinitions,
 				document.TargetModeDefinitions,
-				document.CompositionMode);
+				document.CompositionMode,
+				// 整条重建必须把来源表带上：漏了它，一次读快照就把用户设的游戏来源全抹掉。
+				document.SourceItemIds);
 		}
 		var fingerprint = await FingerprintProtocolAsync(cancellationToken).ConfigureAwait(false);
 		var runtime = await ReadKeyValueFileAsync(runtimePath, cancellationToken).ConfigureAwait(false);
@@ -528,7 +531,9 @@ public sealed class RuntimeArmorRegistryService
 			NormalizeModels(models),
 			NormalizePieceOverrides(pieceOverrides),
 			NormalizeTargetModes(targetModes),
-			current.CompositionMode);
+			current.CompositionMode,
+			// 来源表不是"应用"这一侧的输入，它跟着当前文档走：一次应用不该把用户设的来源清空。
+			current.SourceItemIds);
 		// 跳过的素体必须在「已部署 Unit」检查**之前**去掉：被跳过的素体往往正是没部署的那个
 		// （目标不是自己的素体 / 重编失败），留着它，下面的检查会让整次应用失败，其余映射也一起没了。
 		var compiled = desired with
@@ -729,9 +734,21 @@ public sealed class RuntimeArmorRegistryService
 			NormalizeLegacyHelmetSlots(workspace.Models ?? Array.Empty<RuntimeArmorRegistryModel>()),
 			workspace.PieceOverrides ?? Array.Empty<RuntimeArmorRegistryPieceOverride>(),
 			workspace.TargetModes ?? Array.Empty<RuntimeArmorRegistryTargetMode>(),
-			workspace.CompositionMode);
+			workspace.CompositionMode,
+			workspace.SourceItems);
 		ValidateMappings(document.Mappings);
 		ValidateModels(document.ModelDefinitions, document.Mappings);
+		// 旧工作区没有来源表：用映射行反推一次（素体映射的 SourceItemId 为空，天然被排除）。
+		// 反推能救回"有目标的来源"；"已提升为来源但一个目标都没有"的旧数据本来就没落盘，救不回来。
+		if (workspace.SourceItems is null)
+		{
+			var backfilled = document.Mappings
+				.Where(mapping => mapping.SourceItemId is not null)
+				.Select(mapping => mapping.SourceItemId!.Value)
+				.Distinct()
+				.ToArray();
+			document = document with { SourceItems = backfilled };
+		}
 		// 这三个字段（pieceOverrides / targetModes / compositionMode）**没有任何在役消费者**：
 		// 两条在役链路（真映射走 dl_bin、兼容模式走 wardrobe.links）的签名里都没有它们，
 		// 现网 0 条，唯一读它们的 Lua 因缺 ffi 加载即退出。
@@ -758,7 +775,10 @@ public sealed class RuntimeArmorRegistryService
 			document.ModelDefinitions,
 			document.PieceOverrideDefinitions,
 			document.TargetModeDefinitions,
-			document.CompositionMode);
+			document.CompositionMode,
+			// 空表就写成 null（JsonIgnoreCondition.WhenWritingNull 会整个省掉这个属性），
+			// 让"没有来源表"与"来源表是空的"在文件里长得一样——省掉的分支比多出的分支安全。
+			document.SourceItemIds.Count == 0 ? null : document.SourceItemIds.OrderBy(id => id).ToArray());
 		return JsonSerializer.Serialize(workspace, WorkspaceJsonOptions);
 	}
 
@@ -808,7 +828,9 @@ public sealed class RuntimeArmorRegistryService
 		IReadOnlyList<RuntimeArmorRegistryModel>? Models,
 		IReadOnlyList<RuntimeArmorRegistryPieceOverride>? PieceOverrides,
 		IReadOnlyList<RuntimeArmorRegistryTargetMode>? TargetModes,
-		string CompositionMode = "full");
+		string CompositionMode = "full",
+		// 层 2 的来源表（游戏条目里被指定为视觉来源的那些）。旧文件没有这个字段 ⇒ null ⇒ 反推迁移。
+		IReadOnlyList<uint>? SourceItems = null);
 
 	public static RuntimeArmorRegistryDocument ParseProtocol(string text)
 	{

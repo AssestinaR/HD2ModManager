@@ -133,7 +133,8 @@ public static class CustomModelSectionalCompaction
 			models,
 			document.PieceOverrideDefinitions,
 			document.TargetModeDefinitions,
-			document.CompositionMode);
+			document.CompositionMode,
+			document.SourceItemIds);
 
 		// 用"保留外部素体"的那条保存路径：拆件发生在一次长流程里，
 		// 期间可能有别的进程（vpk2patch）往工作区加了素体，整份覆盖会把它们吞掉。

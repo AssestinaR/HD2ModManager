@@ -72,7 +72,9 @@ public sealed class ArmorRegistrySelectionScopeArchitectureTests
 		var exists = ExtractMember(page, "private bool ProviderStillExists(");
 
 		Assert.True(exists.Length > 0, "无法定位 ProviderStillExists。");
-		Assert.Contains("pendingProviderIds.Contains", exists);
+		// 来源表现在是层 2 的一张真表（document.SourceItemIds），不再是"待建"的内存集合，
+		// 但判据没变：来源存在与否**不能**看它有没有映射目标，只映射数 == 0 是允许的状态。
+		Assert.Contains("sourceItemIds.Contains", exists);
 		Assert.Contains("Mappings.Any", exists);
 		Assert.DoesNotContain("Count ==", exists);
 	}

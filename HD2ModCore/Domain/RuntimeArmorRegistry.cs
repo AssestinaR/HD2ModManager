@@ -87,7 +87,8 @@ public sealed record RuntimeArmorRegistryDocument(
 	IReadOnlyList<RuntimeArmorRegistryModel>? Models = null,
 	IReadOnlyList<RuntimeArmorRegistryPieceOverride>? PieceOverrides = null,
 	IReadOnlyList<RuntimeArmorRegistryTargetMode>? TargetModes = null,
-	string CompositionMode = "full")
+	string CompositionMode = "full",
+	IReadOnlyList<uint>? SourceItems = null)
 {
 	public IReadOnlyList<RuntimeArmorRegistryModel> ModelDefinitions { get; init; }
 		= Models ?? Array.Empty<RuntimeArmorRegistryModel>();
@@ -95,6 +96,25 @@ public sealed record RuntimeArmorRegistryDocument(
 		= PieceOverrides ?? Array.Empty<RuntimeArmorRegistryPieceOverride>();
 	public IReadOnlyList<RuntimeArmorRegistryTargetMode> TargetModeDefinitions { get; init; }
 		= TargetModes ?? Array.Empty<RuntimeArmorRegistryTargetMode>();
+
+	/// <summary>
+	/// 游戏条目里被显式指定为"视觉来源"的那些（层 2 的来源表）。
+	/// <para>
+	/// 为什么需要它：来源以前只是映射行上的一个字段（<see cref="RuntimeArmorRegistryMapping.SourceItemId"/>），
+	/// 于是"没有目标的来源"无处可存——把一个护甲设为来源、还没配目标，保存后它就不存在了；
+	/// 删掉某个来源的最后一个目标，来源也跟着蒸发。自定义素体没有这个问题，因为它们在
+	/// <see cref="ModelDefinitions"/> 里有独立记录。这张表就是给游戏条目的同一份待遇。
+	/// </para>
+	/// <para>
+	/// 只影响管理器侧：编译后的协议里，没有目标的来源本来就没有任何运行时效果（只有
+	/// <c>model=</c> 与 <c>mapping=</c> 两种行），所以它**不参与**协议序列化。
+	/// </para>
+	/// <para>
+	/// 刻意做成**纯计算属性**（而不是 `ModelDefinitions` 那种 init 缓存）：那张表必须显式重建，
+	/// `with { Models = … }` 会带着旧值复制过去——同一个坑已经踩过两次。这里不支持那个错误。
+	/// </para>
+	/// </summary>
+	public IReadOnlyList<uint> SourceItemIds => SourceItems ?? Array.Empty<uint>();
 }
 
 public sealed record RuntimeArmorCatalogEntry(

@@ -130,7 +130,9 @@ public sealed class CustomModelReconciler
 			keptModels,
 			snapshot.Document.PieceOverrideDefinitions,
 			snapshot.Document.TargetModeDefinitions,
-			snapshot.Document.CompositionMode);
+			snapshot.Document.CompositionMode,
+			// 来源表与素体无关，原样带过去；漏了它，一次素体对账就会把用户设的游戏来源全抹掉。
+			snapshot.Document.SourceItemIds);
 		// known 传"我这次见到的全部 key"（含要删的那些），否则 Preserving 会把它们当成
 		// "别人刚加的外部素体"又合并回来 —— 等于没删。
 		var known = models.Select(model => model.Key).ToHashSet(StringComparer.Ordinal);
