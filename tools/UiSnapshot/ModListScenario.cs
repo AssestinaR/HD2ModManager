@@ -237,6 +237,66 @@ internal static class ModListScenario
     }
 
     // Mirrors the workspace: a canvas-colored surface with the standard 12px gap.
+    // 探针：行摘要那一行现在多两个"半格"——左边是行自身的状态（视觉来源 · n 个目标），
+    // 右边是把行指向别人的关系（已映射到：X）。这里各造一行，确认两格各归各位、不互相挤。
+    public static Scenario BuildOccupancyProbe(string name)
+    {
+        var rows = new List<FakeRow>
+        {
+            new()
+            {
+                ListKey = "occ-both",
+                Name = "RE-2310 头盔替换 · 猩红",
+                RowPresentation = new ModListRowPresentation(
+                    TypeLabel: "头盔", TypeTone: ModListRowTone.Accent,
+                    ActivationLabel: "2 个版本",
+                    Summary: "换色孪生 · 2 套",
+                    OccupancyLabel: "视觉来源 · 3 个目标", OccupancyTone: ModListRowTone.Success,
+                    MappingLabel: "已映射到：夜行者素体", MappingTone: ModListRowTone.Accent,
+                    Note: "低污染模式下不可")
+            },
+            new()
+            {
+                ListKey = "occ-source",
+                Name = "只有来源身份",
+                RowPresentation = new ModListRowPresentation(
+                    TypeLabel: "护甲", TypeTone: ModListRowTone.Accent,
+                    OccupancyLabel: "视觉来源 · 尚无映射目标", OccupancyTone: ModListRowTone.Success)
+            },
+            new()
+            {
+                ListKey = "occ-mapped",
+                Name = "只是别人的映射目标",
+                RowPresentation = new ModListRowPresentation(
+                    TypeLabel: "护甲", TypeTone: ModListRowTone.Accent,
+                    MappingLabel: "已映射到：夜行者素体", MappingTone: ModListRowTone.Accent)
+            },
+            new()
+            {
+                ListKey = "occ-plain",
+                Name = "既不是来源也不是目标",
+                RowPresentation = new ModListRowPresentation(
+                    TypeLabel: "套装", TypeTone: ModListRowTone.Accent,
+                    ActivationLabel: "仅存储")
+            }
+        };
+
+        var panel = new ModListPanel
+        {
+            HeaderTitle = "占用标注探针",
+            HeaderSummary = "左：行自身状态 · 右：已映射到谁",
+            ItemsSource = rows,
+            SelectionPolicy = ModListSelectionPolicy.Multiple,
+            RowActions = ModListRowAction.None,
+        };
+
+        return new Scenario
+        {
+            Name = name,
+            Build = () => Wrap(panel),
+        };
+    }
+
     private static FrameworkElement Wrap(FrameworkElement content) => new Border
     {
         Background = ScenarioCatalog.Resource("SurfaceCanvas"),

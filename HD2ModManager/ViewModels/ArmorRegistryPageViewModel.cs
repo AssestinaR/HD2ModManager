@@ -2798,33 +2798,36 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	/// </summary>
 	public void ApplyOccupancy(bool isSource, int sourceTargetCount, string? providerKey, string? providerName)
 	{
-		var label = BuildOccupancyLabel(isSource, sourceTargetCount, providerName);
-		var tone = providerKey is not null ? ModListRowTone.Accent : ModListRowTone.Success;
+		var occupancy = BuildOccupancyLabel(isSource, sourceTargetCount);
+		var mapping = string.IsNullOrWhiteSpace(providerName) ? null : $"已映射到：{providerName}";
 		if (IsSource == isSource
 			&& this.sourceTargetCount == sourceTargetCount
 			&& string.Equals(MappedProviderKey, providerKey, StringComparison.Ordinal)
-			&& string.Equals(RowPresentation.OccupancyLabel, label, StringComparison.Ordinal))
+			&& string.Equals(RowPresentation.OccupancyLabel, occupancy, StringComparison.Ordinal)
+			&& string.Equals(RowPresentation.MappingLabel, mapping, StringComparison.Ordinal))
 			return;
 
 		IsSource = isSource;
 		this.sourceTargetCount = sourceTargetCount;
 		MappedProviderKey = providerKey;
 		MappedProviderName = providerName;
-		RowPresentation = RowPresentation with { OccupancyLabel = label, OccupancyTone = tone };
+		RowPresentation = RowPresentation with
+		{
+			// 自身状态靠左，指向别人的关系靠右。
+			OccupancyLabel = occupancy,
+			OccupancyTone = ModListRowTone.Success,
+			MappingLabel = mapping,
+			MappingTone = ModListRowTone.Accent,
+		};
 		OnPropertyChanged(nameof(IsSource));
 		OnPropertyChanged(nameof(IsMapped));
 		OnPropertyChanged(nameof(IsHidden));
 	}
 
-	private static string? BuildOccupancyLabel(bool isSource, int targetCount, string? providerName)
-	{
-		var hasProvider = !string.IsNullOrWhiteSpace(providerName);
-		if (!isSource && !hasProvider) return null;
-
-		var sourceText = targetCount == 0 ? "视觉来源 · 尚无映射目标" : $"视觉来源 · {targetCount} 个目标";
-		if (isSource && hasProvider) return $"{sourceText} · 已映射到：{providerName}";
-		return isSource ? sourceText : $"已映射到：{providerName}";
-	}
+	private static string? BuildOccupancyLabel(bool isSource, int targetCount)
+		=> isSource
+			? targetCount == 0 ? "视觉来源 · 尚无映射目标" : $"视觉来源 · {targetCount} 个目标"
+			: null;
 
 
 	private string? lowPollutionWarning;

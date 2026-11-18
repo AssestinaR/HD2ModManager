@@ -41,10 +41,13 @@ public sealed record ModListRowPresentation(
     string? OrderLabel = null,
     ModListRowTone OrderTone = ModListRowTone.Accent,
     string? Note = null,
-    // 行状态类的补充说明（护甲映射页用它写"视觉来源 · 3 个目标" / "已映射到：X"）。
-    // 单独占一格，不和 Summary / Note 抢位置：那两格分别被孪生说明、低污染说明占着。
+    // 行状态类的补充说明。两格分开放，因为它们读起来方向不同：
+    // - OccupancyLabel：这一行**自身**的状态（"视觉来源 · 3 个目标"），跟类型/序号一起靠左；
+    // - MappingLabel：它**指向别人**的关系（"已映射到：X"），靠右，和 Note 一列。
     string? OccupancyLabel = null,
-    ModListRowTone OccupancyTone = ModListRowTone.Accent)
+    ModListRowTone OccupancyTone = ModListRowTone.Accent,
+    string? MappingLabel = null,
+    ModListRowTone MappingTone = ModListRowTone.Accent)
 {
     public static ModListRowPresentation Empty { get; } = new();
 
@@ -55,6 +58,7 @@ public sealed record ModListRowPresentation(
     public bool HasOrder => !string.IsNullOrWhiteSpace(OrderLabel);
     public bool HasNote => !string.IsNullOrWhiteSpace(Note);
     public bool HasOccupancy => !string.IsNullOrWhiteSpace(OccupancyLabel);
+    public bool HasMapping => !string.IsNullOrWhiteSpace(MappingLabel);
 }
 
 public interface IModListSelectable : IModListKeyed
