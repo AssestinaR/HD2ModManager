@@ -117,6 +117,13 @@ def records(d, want):
     return out
 
 
+def chunk_order(d, off):
+    """按记录里的 chunk 表返回 chunk 名字的顺序。"""
+    nch, = struct.unpack_from('<I', d, off + 28)
+    offs = sorted(struct.unpack_from('<%dI' % nch, d, off + 32))
+    return [bytes(d[off + o:off + o + 4]).decode('latin1') for o in offs]
+
+
 def pad_shex(shex, target):
     if len(shex) > target:
         raise SystemExit('SHEX %d B > 目标 %d B' % (len(shex), target))
@@ -139,6 +146,8 @@ def main():
     ap.add_argument('--shex-size', type=int, required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--stat', choices=['ours', 'donor'], default='ours')
+    ap.add_argument('--tail', choices=['ours', 'donor'], default='ours',
+                    help='SHEX 之后的尾部 chunk 用哪边的：ours=我们的 STAT；donor=照抄 donor 的其余 chunk（含 PRIV）')
     ap.add_argument('--no-sign', action='store_true')
     ap.add_argument('--verify', action='store_true')
     args = ap.parse_args()
@@ -153,8 +162,18 @@ def main():
     pay = bytearray(open(args.payload, 'rb').read())
     tg = records(pay, args.donor_size)
     ref = tg[0]['ck']
+    ref_order = chunk_order(pay, tg[0]['off'])
     parts = [('RDEF', ref['RDEF']), ('ISGN', ref['ISGN']), ('OSGN', ref['OSGN']),
-             ('SHEX', shex), ('STAT', ours['STAT'] if args.stat == 'ours' else ref['STAT'])]
+             ('SHEX', shex)]
+    if args.tail == 'donor':
+        # 照抄 donor 在 SHEX 之后的 chunk（顺序与名字都要一致）。
+        # 有的记录尾部是 PRIV（8,184 B）而不是 STAT；丢掉它会让记录短一截、尺寸对不上。
+        for name in ref_order[3:]:
+            if name == 'SHEX':
+                continue
+            parts.append((name, ref[name]))
+    else:
+        parts.append(('STAT', ours['STAT'] if args.stat == 'ours' else ref['STAT']))
     nch = len(parts)
     start = (32 + nch * 4 + 3) & ~3
     total = start + sum(8 + len(v) for _, v in parts)

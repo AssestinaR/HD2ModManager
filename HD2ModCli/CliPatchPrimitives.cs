@@ -1,4 +1,4 @@
-﻿using HD2ModAdaptation.PatchReconstruction;
+using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 using HD2ModCore.Domain;
@@ -546,7 +546,7 @@ internal static class CliPatchPrimitives
 		}
 		finalMeshes = compiledLayout.Meshes.ToList();
 
-		var streamsResult = streamCompiler.TryCompile(unit.Model, finalMeshes);
+var streamsResult = streamCompiler.TryCompile(unit.Model, finalMeshes);
 		if (!streamsResult.IsValid)
 		{
 			diagnostics.AddRange(streamsResult.Diagnostics.Select(diagnostic => diagnostic.Message));
@@ -589,6 +589,207 @@ internal static class CliPatchPrimitives
 			CompositeGpuResourceData: null,
 			ReplacementMaterialIds: null);
 		return new HideUnitOutcome(edit, diagnostics);
+	}
+
+	// --- simple geometry (primitive) ---------------------------------------
+
+	/// <summary>
+	/// 把一个 Unit 的可见几何换成几何原语（三角形/四边形/立方体/球体），其余全部沿用原 Unit：
+	/// 顶点流 ABI、骨骼重映射、材质绑定、剔除网格、LOD 结构。产出仍是"只含这个 Unit 的独立 patch"。
+	/// </summary>
+	internal static async ValueTask<HideUnitOutcome> PlacePrimitiveCoreAsync(
+		AdaptationPatchTocEntry entry,
+		IReadOnlyList<AdaptationPatchTocEntry> patchEntries,
+		CanonicalPrimitiveSpec spec,
+		CancellationToken cancellationToken)
+	{
+		var diagnostics = new List<string>();
+		if (entry.AssetKey.TypeId != UnitTypeId)
+		{
+			diagnostics.Add($"条目类型 0x{entry.AssetKey.TypeId:x16} 不是 Unit，已跳过。");
+			return new HideUnitOutcome(null, diagnostics);
+		}
+
+		PatchUnitMesh unit;
+		try
+		{
+			var reader = new PatchUnitMeshReader();
+			unit = await reader.ReadAsync(entry, patchEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException or KeyNotFoundException or FileNotFoundException)
+		{
+			diagnostics.Add($"读取 Unit 网格失败：{exception.Message}");
+			return new HideUnitOutcome(null, diagnostics);
+		}
+
+		var builder = new CanonicalPrimitiveBuilder();
+		var preparation = new CanonicalMeshPreparation();
+		var streamCompiler = new CanonicalStreamContractCompiler();
+
+		var finalMeshes = new List<UnitRawMeshData>(unit.Model.Meshes.Count);
+		foreach (var mesh in unit.Model.Meshes)
+		{
+			var raw = unit.Model.RawMeshData.FirstOrDefault(candidate => candidate.MeshInfoIndex == mesh.Index);
+			var stream = unit.Model.Streams.FirstOrDefault(candidate => candidate.Index == (int)mesh.StreamIndex);
+			if (raw is null || stream is null)
+			{
+				diagnostics.Add($"MeshInfo {mesh.Index} 的 RawMesh/stream 载荷不完整，无法重建。");
+				return new HideUnitOutcome(null, diagnostics);
+			}
+
+			// 剔除/代理网格不带可见几何，原样保留（与 hide-unit 一致）。
+			if (raw.LodIndex == -1)
+			{
+				finalMeshes.Add(raw);
+				continue;
+			}
+
+			var section = raw.Sections.FirstOrDefault();
+			var perMesh = spec with
+			{
+				MaterialIndex = section?.MaterialIndex ?? spec.MaterialIndex,
+				MaterialSlotId = section?.MaterialSlotId ?? spec.MaterialSlotId
+			};
+			var built = builder.TryBuild(perMesh, stream, raw.MeshInfoIndex);
+			if (!built.IsValid || built.Mesh is null)
+			{
+				diagnostics.AddRange(built.Diagnostics.Select(diagnostic => diagnostic.Message));
+				return new HideUnitOutcome(null, diagnostics);
+			}
+
+			finalMeshes.Add(built.Mesh with
+			{
+				LodIndex = raw.LodIndex,
+				StreamIndex = raw.StreamIndex,
+				MeshId = raw.MeshId
+			});
+		}
+
+		var compiledLayout = new CanonicalUnitMaterialLayoutCompiler().TryCompile(unit.Model, finalMeshes, Array.Empty<CanonicalMaterialSectionProvenance>());
+		if (!compiledLayout.IsValid)
+		{
+			diagnostics.AddRange(compiledLayout.Diagnostics.Select(diagnostic => diagnostic.Message));
+			return new HideUnitOutcome(null, diagnostics);
+		}
+		finalMeshes = compiledLayout.Meshes.ToList();
+
+		// 需求：模板 unit 的材质绑定 id 全是 0（等于没有材质）。这里允许调用方强行指定一个材质 id，
+		// 让重建出来的 unit 真的引用那个材质。绑定条数为 0 时按 mesh 的 section 数补出来。
+		var bindings = compiledLayout.Bindings;
+		if (spec.MaterialId is { } forcedMaterial)
+		{
+			if (bindings.Count == 0)
+			{
+				var slots = finalMeshes
+					.SelectMany(mesh => mesh.Sections.Select(section => section.MaterialSlotId))
+					.Distinct()
+					.ToArray();
+				bindings = slots.Length == 0
+					? new[] { new UnitMaterialBinding(0, forcedMaterial) }
+					: slots.Select((slot, _) => new UnitMaterialBinding(slot, forcedMaterial)).ToArray();
+			}
+			else
+			{
+				bindings = bindings.Select(binding => binding with { MaterialId = forcedMaterial }).ToArray();
+			}
+		}
+
+		var streamsResult = streamCompiler.TryCompile(unit.Model, finalMeshes);
+		if (!streamsResult.IsValid)
+		{
+			diagnostics.AddRange(streamsResult.Diagnostics.Select(diagnostic => diagnostic.Message));
+			return new HideUnitOutcome(null, diagnostics);
+		}
+		var targetModel = unit.Model with { Streams = streamsResult.Streams };
+
+		var preparedMeshes = new List<UnitRawMeshData>(finalMeshes.Count);
+		foreach (var raw in finalMeshes)
+		{
+			var stream = targetModel.Streams.Single(candidate => candidate.Index == (int)raw.StreamIndex);
+			var prepared = preparation.TryPrepare(raw, stream);
+			if (!prepared.IsValid || prepared.Mesh is null)
+			{
+				diagnostics.AddRange(prepared.Diagnostics.Select(diagnostic => diagnostic.Message));
+				return new HideUnitOutcome(null, diagnostics);
+			}
+			preparedMeshes.Add(prepared.Mesh);
+		}
+
+		var rebuiltBones = targetModel.BoneInfos
+			.Select((bone, index) => new CanonicalBoneInfoRebuild(index, bone))
+			.ToArray();
+
+		var rebuilder = new CanonicalUnitRebuilder();
+		var rebuilt = rebuilder.TryRebuild(targetModel, unit.Payload.TocData, preparedMeshes, rebuiltBones, bindings);
+		if (!rebuilt.IsValid || rebuilt.Output is null)
+		{
+			diagnostics.AddRange(rebuilt.Diagnostics.Select(diagnostic => diagnostic.Message));
+			return new HideUnitOutcome(null, diagnostics);
+		}
+
+		var edit = new PatchUnitMeshEditResult(
+			entry,
+			unit.Payload,
+			rebuilt.Output.TocData,
+			rebuilt.Output.GpuData,
+			CompositeAssetKey: null,
+			CompositeTocData: null,
+			CompositeGpuResourceData: null,
+			ReplacementMaterialIds: null);
+		return new HideUnitOutcome(edit, diagnostics);
+	}
+
+	/// <summary>把一组 Unit 的几何换成原语，输出只含这些 Unit 的新 patch。</summary>
+	public static async ValueTask<CliPatchPrimitiveExecutionResult> PlacePrimitiveAsync(
+		string sourceTocPath,
+		IReadOnlyList<AdaptationAssetKey> keys,
+		CanonicalPrimitiveSpec spec,
+		string outputDirectory,
+		bool overwrite,
+		CancellationToken cancellationToken = default)
+	{
+		if (keys.Count == 0)
+			throw new CliUserException("PatchPrimitiveSelectionRequired", "patch primitive 至少需要一个 Unit AssetKey。");
+		var source = RequireExistingPatchToc(sourceTocPath, "patch primitive");
+		var entries = await Scanner.ScanEntriesAsync(source, cancellationToken).ConfigureAwait(false);
+
+		var edits = new List<PatchUnitMeshEditResult>();
+		var diagnostics = new List<string>();
+		foreach (var key in keys)
+		{
+			var entry = entries.FirstOrDefault(candidate => candidate.AssetKey == key)
+				?? throw new CliUserException("PatchPrimitiveMissing", $"patch primitive 在 '{Path.GetFileName(source)}' 中找不到 Unit 条目 0x{key.TypeId:x16}/0x{key.FileId:x16}。");
+			var placed = await PlacePrimitiveCoreAsync(entry, entries, spec, cancellationToken).ConfigureAwait(false);
+			if (placed.Edit is null)
+			{
+				diagnostics.AddRange(placed.Diagnostics.Select(diagnostic => $"0x{key.FileId:x16}: {diagnostic}"));
+				continue;
+			}
+			edits.Add(placed.Edit);
+		}
+
+		if (edits.Count == 0)
+			throw new CliUserException("PatchPrimitiveProducedNothing", $"patch primitive 未生成任何几何：{string.Join("；", diagnostics)}");
+
+		return await PublishAsync(
+			outputDirectory,
+			overwrite,
+			async staged =>
+			{
+				var writer = new PatchArchiveWriter();
+				var result = await writer.WriteAsync(
+					source, staged,
+					edits,
+					additionalEntries: null,
+					removedEntries: entries.Where(entry => edits.All(edit => edit.Entry.AssetKey != entry.AssetKey)).ToArray(),
+					overwriteExisting: true,
+					preserveOriginalStream: false,
+					headerTemplateTocData: null,
+					cancellationToken).ConfigureAwait(false);
+				return new[] { result.TocFilePath, result.StreamFilePath, result.GpuResourceFilePath };
+			},
+			edits.Count,
+			cancellationToken).ConfigureAwait(false);
 	}
 
 	// --- output publication -------------------------------------------------

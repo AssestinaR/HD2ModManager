@@ -409,5 +409,8 @@ docs/temp/
 docs/eye-check/
 docs/autofix Tools/
 docs/*.zip
+# 第三方参考资料（社区 LUT 指南原文与 138 张图，约 27 MB）——只留本地
+docs/agent/external/hd2-lut-guide.md
+docs/agent/external/hd2-lut-guide_media/
 # 本地 agent 操作手册（提交/推送/发布）——不进版本库
 docs/github-and-release-guide.md

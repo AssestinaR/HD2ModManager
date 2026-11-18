@@ -1,5 +1,8 @@
+using System.Globalization;
+using System.Numerics;
 using System.Reflection;
 using System.Text.Json;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 using HD2ModCore.Application;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using HD2ModCore.Domain;
@@ -1475,6 +1478,112 @@ public static class CliApplication
 				new { ok = hidden.Success, hideUnit = hidden },
 				() => $"已生成 {hidden.AffectedEntryCount} 个隐藏 Unit 的新 Patch：{hidden.OutputDirectory}");
 			return hidden.Success ? 0 : 2;
+		}
+		if (command.Length >= 2 && command[0] == "patch" && command[1] == "primitive")
+		{
+			EnsurePatchPrimitiveExportOptions(invocation.Options, "patch primitive");
+			if (command.Length < 5)
+				throw new CliUserException(
+					"InvalidArguments",
+					"patch primitive <源 patch.toc> <形状> <尺寸> [xy|yz] [x,y,z] [static] --keys <unit 列表> --output <目录> [--overwrite] [--json]\n" +
+					"  形状：tri | quad | cube | sphere\n" +
+					"  尺寸：quad/tri 用 \"宽,高\"；cube 用 \"边长\"；sphere 用 \"半径\"（单位：米）\n" +
+					"  yz   ：四边形落在 X=0 平面（宽沿 Y、高沿 Z，法线朝 +X）\n" +
+					"  x,y,z：中心点（默认 0,0,0）\n" +
+					"  static：不绑骨（骨骼权重全 0）");
+			var primitiveSource = command[2];
+			var shape = command[3].ToLowerInvariant() switch
+			{
+				"tri" or "triangle" => CanonicalPrimitiveShape.Triangle,
+				"quad" => CanonicalPrimitiveShape.Quad,
+				"cube" => CanonicalPrimitiveShape.Cube,
+				"sphere" => CanonicalPrimitiveShape.Sphere,
+				_ => throw new CliUserException("PatchPrimitiveShapeInvalid", $"不认识的形状：{command[3]}（tri | quad | cube | sphere）")
+			};
+			var sizeParts = command[4].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+			if (sizeParts.Length == 0 ||
+				!float.TryParse(sizeParts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var sizeWidth) ||
+				sizeWidth <= 0)
+				throw new CliUserException("PatchPrimitiveSizeInvalid", $"尺寸无法解析：{command[4]}（示例：0.15,0.15 或 0.3）");
+			var sizeHeight = sizeWidth;
+			if (sizeParts.Length > 1 &&
+				(!float.TryParse(sizeParts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out sizeHeight) || sizeHeight <= 0))
+				throw new CliUserException("PatchPrimitiveSizeInvalid", $"尺寸无法解析：{command[4]}");
+			var primitivePlane = CanonicalPrimitivePlane.Xy;
+			var primitiveCenter = Vector3.Zero;
+			var primitiveNoSkin = false;
+			ulong? primitiveMaterialId = null;
+			float primitiveBackdropScale = 0f;
+			float primitiveBackdropOffsetY = 0f;
+			for (var extra = 5; extra < command.Length; extra++)
+			{
+				var token = command[extra];
+				if (string.Equals(token, "xy", StringComparison.OrdinalIgnoreCase) ||
+					string.Equals(token, "yz", StringComparison.OrdinalIgnoreCase) ||
+					string.Equals(token, "xz", StringComparison.OrdinalIgnoreCase))
+				{
+					primitivePlane = token.ToLowerInvariant() switch
+					{
+						"yz" => CanonicalPrimitivePlane.Yz,
+						"xz" => CanonicalPrimitivePlane.Xz,
+						_ => CanonicalPrimitivePlane.Xy
+					};
+					continue;
+				}
+				if (string.Equals(token, "static", StringComparison.OrdinalIgnoreCase))
+				{
+					primitiveNoSkin = true;
+					continue;
+				}
+				if (token.StartsWith("backdy=", StringComparison.OrdinalIgnoreCase))
+				{
+					var rawDy = token.Substring(7);
+					if (!float.TryParse(rawDy, NumberStyles.Float, CultureInfo.InvariantCulture, out var dyValue))
+						throw new CliUserException("PatchPrimitiveBackdropInvalid", $"背景板横向偏移无法解析：{token}");
+					primitiveBackdropOffsetY = dyValue;
+					continue;
+				}
+				if (token.StartsWith("back=", StringComparison.OrdinalIgnoreCase))
+				{
+					var rawBack = token.Substring(5);
+					if (!float.TryParse(rawBack, NumberStyles.Float, CultureInfo.InvariantCulture, out var backScale) || backScale <= 0)
+						throw new CliUserException("PatchPrimitiveBackdropInvalid", $"背景板倍数无法解析：{token}（示例 back=1.25）");
+					primitiveBackdropScale = backScale;
+					continue;
+				}
+				if (token.StartsWith("mat=", StringComparison.OrdinalIgnoreCase))
+				{
+					var rawMaterial = token.Substring(4);
+					var hex = rawMaterial.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? rawMaterial.Substring(2) : rawMaterial;
+					if (!ulong.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var parsedMaterial))
+						throw new CliUserException("PatchPrimitiveMaterialInvalid", $"材质 id 无法解析：{token}（示例 mat=0x1234abcd5678ef90）");
+					primitiveMaterialId = parsedMaterial;
+					continue;
+				}
+				var centerParts = token.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+				if (centerParts.Length == 3 &&
+					float.TryParse(centerParts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var cx) &&
+					float.TryParse(centerParts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var cy) &&
+					float.TryParse(centerParts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var cz))
+				{
+					primitiveCenter = new Vector3(cx, cy, cz);
+					continue;
+				}
+				throw new CliUserException("PatchPrimitiveArgumentInvalid", $"无法识别的参数：{token}（可用：xy | yz | x,y,z | static）");
+			}
+			var primitiveSpec = new CanonicalPrimitiveSpec(
+				shape, sizeWidth, sizeHeight, Depth: 0f, Center: primitiveCenter, Segments: 12,
+				Plane: primitivePlane, NoSkin: primitiveNoSkin, MaterialId: primitiveMaterialId,
+				BackdropScale: primitiveBackdropScale, BackdropOffsetY: primitiveBackdropOffsetY);
+			var primitiveKeys = CliPatchPrimitives.ResolveKeys(invocation.Options.Keys, "patch primitive --keys");
+			var placed = await CliPatchPrimitives.PlacePrimitiveAsync(
+				primitiveSource, primitiveKeys, primitiveSpec,
+				RequireOutput(invocation.Options, "patch primitive"),
+				invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = placed.Success, primitive = placed, shape = shape.ToString(), width = sizeWidth, height = sizeHeight },
+				() => $"已把 {placed.AffectedEntryCount} 个 Unit 的几何换成 {shape} {sizeWidth}x{sizeHeight}：{placed.OutputDirectory}");
+			return placed.Success ? 0 : 2;
 		}
 		if (command.Length >= 3 && command[0] == "unit" && command[1] == "show")
 		{
