@@ -20,13 +20,13 @@ namespace HD2ModManager.ViewModels;
 
 public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 {
-	// 四个选项卡的固定顺序（标签条按这个顺序排，与旧版从左到右一致）。
+	// 右侧表的三类行（标签条按这个顺序排，与旧版从左到右一致）。
+	// 「已映射」不在其中：它不是一类行，而是"要不要显示被占用的行"的可见性开关。
 	private static readonly ArmorMappingPickerTab[] PickerTabOrder =
 	[
 		ArmorMappingPickerTab.Set,
 		ArmorMappingPickerTab.Armor,
 		ArmorMappingPickerTab.Helmet,
-		ArmorMappingPickerTab.Mapped,
 	];
 
 	private readonly RuntimeArmorRegistryService service;
@@ -53,10 +53,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	// 并集就是全集，界面必须如实反映"没有筛选"，而不是留一个说不清的状态。
 	private bool unitOverrideHitFilter;
 	private bool unitOverrideMissFilter;
-	// 四个选项卡也是标签，**互不排斥**，但方向上不对称：
-	//   · 套装 / 护甲 / 头盔 = 缩窄（都不选 = 三类全要）
-	//   · 已映射 = 扩宽（默认不列，选中才把"已经映射过"的行放出来）
+	// 右侧表只有一张（游戏数据里的一行一条）。下面这三个是**筛选**标签：互不排斥，都不选 = 三类全要。
 	private readonly HashSet<ArmorMappingPickerTab> selectedPickerTabs = new();
+	// 可见性开关（「已映射」）：被占用的行（作为视觉来源、或已映射到某个来源）默认不列，勾上才显示。
+	private bool showOccupiedRows;
 	private uint? selectedProviderId;
 	private IReadOnlyList<uint> selectedProviderMemberIds = [];
 	// 层 2 的"来源表"（游戏条目里被显式指定为视觉来源的那些）。和自定义素体一样：
@@ -68,12 +68,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private string? notifiedAutoCompletedTwinFingerprint;
 	private IReadOnlyDictionary<uint, RuntimeArmorCatalogEntry> cachedCatalogById = new Dictionary<uint, RuntimeArmorCatalogEntry>();
 	private ArmorMappingPickerBaseCatalog cachedPickerBaseCatalog = new([], [], []);
-	private IReadOnlyDictionary<uint, string> cachedManagedOwnerByItemId = new Dictionary<uint, string>();
+	// 右侧表现在自己表达"占用"（IsSource / MappedTo），规划器不再负责把被占用的行删掉或置灰；
+	// 它只保留真正该管的不可用判断（2 槽压缩 / SEAF / NPC）。
+	private static readonly IReadOnlyDictionary<uint, string> NoManagedOwners = new Dictionary<uint, string>();
 	private readonly Dictionary<ArmorMappingPickerTab, IReadOnlyList<RuntimeArmorChoiceViewModel>> availableChoicesByTab = new();
 	private readonly Dictionary<string, RuntimeArmorChoiceViewModel> allAvailableChoicesByKey = new(StringComparer.OrdinalIgnoreCase);
-	// 「已映射」标签下的行（键形如 mapped:<来源>:<护甲>）。它们不是"未管理护甲"，所以不进上面那张表；
-	// 但"重定向到另一个视觉来源"这件事必须能按行键把它们找回来，所以单独存一份。
-	private readonly Dictionary<string, RuntimeArmorChoiceViewModel> mappedChoicesByKey = new(StringComparer.OrdinalIgnoreCase);
 	private bool isSelectedProviderTwoSlotCompressed;
 	private bool isSelectedProviderThreeSlotCompressed;
 	private IReadOnlyDictionary<string, ArmorDisplayFacts> cachedArmorDisplayFacts = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
@@ -175,10 +174,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				() => IsPickerTabSelected(ArmorMappingPickerTab.Helmet),
 				value => SetPickerTabSelected(ArmorMappingPickerTab.Helmet, value),
 				() => $"头盔 · {CountFilteredTabItems(ArmorMappingPickerTab.Helmet)} 项"),
-			new ModListSearchFilter("mapped", "已映射",
-				() => IsPickerTabSelected(ArmorMappingPickerTab.Mapped),
-				value => SetPickerTabSelected(ArmorMappingPickerTab.Mapped, value),
-				() => $"把已经映射到某个视觉来源的护甲也列出来（默认不列）· {CountFilteredTabItems(ArmorMappingPickerTab.Mapped)} 项 · 点击行会跳到左侧来源"),
+			new ModListSearchFilter("occupied", "已映射",
+				() => showOccupiedRows,
+				SetShowOccupiedRows,
+				() => $"把已经被占用的护甲（作为视觉来源、或已映射到某个来源）也列出来（默认不列）· {CountOccupiedRows()} 项"),
 			new ModListSearchFilter("unit-hit", "Unit 命中",
 				() => IsUnitOverrideSelected(hit: true),
 				value => SetUnitOverrideSelected(hit: true, value),
@@ -235,7 +234,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		}
 	}
 
-	// 搜索态标签条上的六枚标签：四个选项卡 + 两个 Unit 覆盖方向。全都**互不排斥**。
+	// 搜索态标签条上的六枚标签：三个筛选（套装 / 护甲 / 头盔）+ 一个可见性开关（已映射）+ 两个 Unit 覆盖方向。
+	// 全都不互斥；「已映射」只决定"要不要显示被占用的行"，不参与筛选。
 	public IReadOnlyList<ModListSearchFilter> SearchFilters { get; }
 
 	private bool IsPickerTabSelected(ArmorMappingPickerTab tab) => selectedPickerTabs.Contains(tab);
@@ -276,8 +276,31 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var count = 0;
 		foreach (var item in items)
 		{
-			if (FilterAvailableArmor(item))
+			// 数量要和"此刻看得见的列表"一致：被占用的行在「已映射」关着时不出现，就不该算进去。
+			if ((showOccupiedRows || !item.IsHidden) && FilterAvailableArmor(item))
 				count++;
+		}
+		return count;
+	}
+
+	// 「已映射」是可见性开关，不是筛选：它只决定要不要把被占用的行放出来。
+	private void SetShowOccupiedRows(bool value)
+	{
+		if (showOccupiedRows == value) return;
+		showOccupiedRows = value;
+		RefreshAvailableRows();
+	}
+
+	// 被占用的行有多少（跟着搜索 / Unit 筛选走），给标签一个实时数量。
+	private int CountOccupiedRows()
+	{
+		var count = 0;
+		foreach (var tab in PickerTabOrder)
+		{
+			foreach (var row in availableChoicesByTab.GetValueOrDefault(tab) ?? [])
+			{
+				if (row.IsHidden && FilterAvailableArmor(row)) count++;
+			}
 		}
 		return count;
 	}
@@ -294,31 +317,23 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	private IReadOnlyList<RuntimeArmorChoiceViewModel> BuildVisibleAvailableRows()
 	{
+		// 右侧表 = 游戏数据里的一行一条（套装 / 护甲 / 头盔）。这三个标签只是**筛选**：
+		// 都不选 = 三类全要；选了就是它们的并集。
+		var narrowed = selectedPickerTabs.Count != 0;
 		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var rows = new List<RuntimeArmorChoiceViewModel>();
-
-		// 套装 / 护甲 / 头盔 是三个"缩窄"标签：三个都不选就是三类全要。
-		var narrowed = selectedPickerTabs.Any(tab => tab != ArmorMappingPickerTab.Mapped);
 		foreach (var tab in PickerTabOrder)
 		{
-			if (tab == ArmorMappingPickerTab.Mapped) continue;
 			if (narrowed && !selectedPickerTabs.Contains(tab)) continue;
-			Append(tab);
-		}
-
-		// 「已映射」是"扩宽"标签，与「含选项」同一个模型：默认**不列**已经映射过的条目，
-		// 选中它才把这些隐藏行放出来——而且它只加不减，不会反过来把上面三类筛掉。
-		if (selectedPickerTabs.Contains(ArmorMappingPickerTab.Mapped)) Append(ArmorMappingPickerTab.Mapped);
-
-		return rows;
-
-		void Append(ArmorMappingPickerTab tab)
-		{
 			foreach (var row in availableChoicesByTab.GetValueOrDefault(tab) ?? [])
 			{
 				if (seen.Add(row.SelectionKey)) rows.Add(row);
 			}
 		}
+
+		// 可见性：被占用的行（视觉来源 / 已映射的目标）默认不列，「已映射」标签把它们放出来。
+		if (!showOccupiedRows) rows.RemoveAll(row => row.IsHidden);
+		return rows;
 	}
 
 	public string ProviderDetailSearchText
@@ -471,7 +486,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			var visible = AvailableArmorsView.Cast<object>().Count();
 			var total = AvailableArmors.Count;
-			var filtered = availableSearchText.Length != 0 || IsUnitOverrideFilterActive || selectedPickerTabs.Count != 0;
+			var filtered = availableSearchText.Length != 0 || IsUnitOverrideFilterActive || selectedPickerTabs.Count != 0 || showOccupiedRows;
 			return filtered ? $"{visible} / {total} 项" : $"{total} 项";
 		}
 	}
@@ -1047,13 +1062,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var scope = IsProviderDetailOpen ? ArmorRegistryScopes.AvailableAsTarget : ArmorRegistryScopes.Available;
 		// 标签不互斥之后，"当前看得见的行"就是唯一判据：看不见的行不该保持选中，
 		// 否则底栏的注册/解除会作用到用户根本看不到的东西上。
-		// 能不能真的被选中，交给 TryResolveAssignable 判定——「已映射」的行只有在打开了一个来源时
-		// 才可选（那时选中它们意味着"重定向到该来源"）。
+		// 被占用的行现在也在同一张表里（IsHidden 只影响默认可见性，不影响能不能选）。
 		var visibleKeys = AvailableArmors
 			.Select(item => item.SelectionKey)
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var combinedKeys = selectedKeys
-			.Where(key => visibleKeys.Contains(key) && TryResolveAssignable(key, out _))
+			.Where(key => visibleKeys.Contains(key)
+				&& allAvailableChoicesByKey.TryGetValue(key, out var item)
+				&& !item.IsBlocked)
 			.Distinct(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 		ApplyMutuallyExclusiveSelection(scope, AvailableArmors, combinedKeys);
@@ -1146,9 +1162,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		if (selection.Scope is not { } scope || !scope.StartsWith("ArmorRegistry:", StringComparison.Ordinal)) return;
 		var selected = selection.SelectedIds;
 		if (selected.Count == 0) return;
-		var visible = allAvailableChoicesByKey.Values
+		var visible = AvailableArmors
 			.Where(item => !item.IsBlocked)
-			.Concat(AvailableArmors.Where(item => !item.IsBlocked))
 			.Concat(Providers)
 			.Concat(ProviderDetailItems)
 			.Select(item => item.SelectionKey)
@@ -1279,36 +1294,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var items = new List<RuntimeArmorChoiceViewModel>(keys.Count);
 		foreach (var key in keys)
 		{
-			if (!TryResolveAssignable(key, out var item)) return null;
+			if (!allAvailableChoicesByKey.TryGetValue(key, out var item) || item.IsBlocked) return null;
 			items.Add(item);
 		}
 		return items.ToArray();
-	}
-
-	/// <summary>
-	/// 一枚右侧行能不能被注册。未管理的护甲随时可以；**「已映射」的行只有"有地方可去"时才行**——
-	/// 它已经挂在某个来源上了，对它能做的唯一操作是重定向到另一个来源，那必须先打开那个来源
-	/// （右侧此时显示的是它的目标列表）。没有目的地就把它当普通护甲收下，只会造出一个
-	/// "既在别人的目标里、又要当来源"的自相矛盾状态。
-	/// </summary>
-	private bool TryResolveAssignable(string key, out RuntimeArmorChoiceViewModel item)
-	{
-		if (allAvailableChoicesByKey.TryGetValue(key, out var plain) && !plain.IsBlocked)
-		{
-			item = plain;
-			return true;
-		}
-
-		if (selectedProviderId is not null
-			&& mappedChoicesByKey.TryGetValue(key, out var mapped)
-			&& !mapped.IsBlocked)
-		{
-			item = mapped;
-			return true;
-		}
-
-		item = null!;
-		return false;
 	}
 
 	public bool CanAssignFromAvailable(IReadOnlyList<string> keys)
@@ -1318,45 +1307,85 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	{
 		var items = ResolveAssignableItems(keys);
 		if (items is null) return;
-		if (selectedProviderId is null)
-		{
-			var providerSourceIds = items
-				.SelectMany(item => item.ProviderSourceItemIds)
-				.Distinct()
-				.ToArray();
-			if (providerSourceIds.Length == 0 || providerSourceIds.Any(id => !Choices.ContainsKey(id))) return;
-			if (items.Length > 1)
-			{
-				foreach (var id in providerSourceIds)
-					sourceItemIds.Add(id);
-				RebuildProjections();
-				RecomputeHasChanges();
-				selection.Clear();
-				return;
-			}
+		if (selectedProviderId is null) AssignAsProviders(items);
+		else AssignAsTargets(items);
+	}
 
+	// 没有打开来源：把选中的护甲"转为视觉来源"。
+	// 已经是来源的（素体一定在来源里）不再重复登记，但也**不能装没看见**——告诉用户下一步该做什么。
+	private void AssignAsProviders(RuntimeArmorChoiceViewModel[] items)
+	{
+		var alreadySources = items.Where(IsSourceRow).ToArray();
+		if (alreadySources.Length > 0)
+		{
+			notifications.Show(
+				$"{alreadySources[0].Name} 已经是视觉来源。要把它改成另一个来源的映射目标，"
+				+ "请先在左侧打开那个来源（点它），再把它拖进目标列表，或用底栏的「注册为映射目标」。",
+				NotificationLevel.Info,
+				TimeSpan.FromSeconds(10),
+				"护甲映射");
+		}
+
+		items = items.Where(item => !IsSourceRow(item)).ToArray();
+		if (items.Length == 0) return;
+
+		var providerSourceIds = items
+			.SelectMany(item => item.ProviderSourceItemIds)
+			.Distinct()
+			.ToArray();
+		if (providerSourceIds.Length == 0 || providerSourceIds.Any(id => !Choices.ContainsKey(id))) return;
+		if (items.Length > 1)
+		{
 			foreach (var id in providerSourceIds)
 				sourceItemIds.Add(id);
-			selectedProviderId = providerSourceIds[0];
-			selectedProviderMemberIds = providerSourceIds;
-			OnPropertyChanged(nameof(IsProviderDetailOpen));
-			OnPropertyChanged(nameof(ProviderDetailTitle));
-			OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
-			OnPropertyChanged(nameof(AvailableRowActionToolTip));
-			OnPropertyChanged(nameof(ProviderDetailSummary));
 			RebuildProjections();
+			RecomputeHasChanges();
 			selection.Clear();
 			return;
 		}
+
+		foreach (var id in providerSourceIds)
+			sourceItemIds.Add(id);
+		selectedProviderId = providerSourceIds[0];
+		selectedProviderMemberIds = providerSourceIds;
+		OnPropertyChanged(nameof(IsProviderDetailOpen));
+		OnPropertyChanged(nameof(ProviderDetailTitle));
+		OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
+		OnPropertyChanged(nameof(AvailableRowActionToolTip));
+		OnPropertyChanged(nameof(ProviderDetailSummary));
+		RebuildProjections();
+		selection.Clear();
+	}
+
+	// 打开了某个来源：把选中的护甲注册成**它的目标**。
+	// 其中"本来就是视觉来源"的那些要先把来源身份解散——那会释放它名下的映射，所以有目标时必须先问一句。
+	private void AssignAsTargets(RuntimeArmorChoiceViewModel[] items)
+	{
+		var sourceIds = selectedProviderMemberIds.Count > 0
+			? selectedProviderMemberIds
+			: [selectedProviderId!.Value];
+
+		// 目的来源自己不能被降级：它正被你当"目标容器"用（把来源拖进它自己的目标列表 = 无意义操作）。
+		items = items.Where(item => !item.MemberItemIds.Any(sourceIds.Contains)).ToArray();
+		if (items.Length == 0) return;
+
+		var dissolving = items.Where(IsSourceRow).ToArray();
+		var risky = dissolving.Where(item => TargetCountOf(item) > 0).ToArray();
+		if (risky.Length > 0 && !ConfirmDissolve(risky))
+		{
+			// 取消：只跳过这几个有目标的，其余"干净"的照做。
+			items = items.Where(item => !risky.Contains(item)).ToArray();
+			if (items.Length == 0) return;
+			dissolving = items.Where(IsSourceRow).ToArray();
+		}
+
+		foreach (var item in dissolving) DissolveSource(item);
 
 		var ids = items
 			.SelectMany(item => item.MemberItemIds)
 			.Distinct()
 			.ToArray();
 
-		var sourceIds = selectedProviderMemberIds.Count > 0
-			? selectedProviderMemberIds
-			: [selectedProviderId.Value];
 		var sourceMembers = sourceIds
 			.Where(Choices.ContainsKey)
 			.Select(sourceId =>
@@ -1371,8 +1400,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var unpaired = 0;
 		foreach (var id in ids)
 		{
-			if (!Choices.TryGetValue(id, out var targetChoice)
-				|| Providers.Any(provider => provider.MemberItemIds.Contains(id))) continue;
+			if (!Choices.TryGetValue(id, out var targetChoice) || sourceIds.Contains(id)) continue;
 			var sourceId = RuntimeArmorMappingPairing.FindUniqueSourceForTarget(sourceMembers, targetChoice.KitKind);
 			if (sourceId is null || sourceId == id || !Choices.TryGetValue(sourceId.Value, out var sourceChoice))
 			{
@@ -1382,7 +1410,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 			// 已经挂在这个来源下：幂等跳过，不重复建行。
 			// 挂在**别的**来源下：这是"重定向"——把那条映射挪过来，而不是再添一条。
-			// （同一个护甲同时挂在两个来源下是错的：运行时只会认其中一条，用户看到的是"改了没生效"。）
+			// （同一个护甲同时挂在两个来源下时运行时只会认其中一条，用户看到的是"改了没生效"。）
 			var existing = Mappings.FirstOrDefault(mapping => mapping.Target.ItemId == id);
 			if (existing is not null)
 			{
@@ -1410,6 +1438,39 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		RebuildProjections();
 		RecomputeHasChanges();
 		selection.Clear();
+	}
+
+	// 这一行是不是"视觉来源"：在来源表里、或是某条映射的来源。
+	// （素体永远在来源侧，但它不出现在右侧表里，所以这里不用管。）
+	private bool IsSourceRow(RuntimeArmorChoiceViewModel item)
+		=> item.MemberItemIds.Any(id => sourceItemIds.Contains(id))
+			|| item.MemberItemIds.Any(id => Mappings.Any(mapping => mapping.Source.ItemId == id));
+
+	// 这个来源名下有几个映射目标（解散它会释放这些）。
+	private int TargetCountOf(RuntimeArmorChoiceViewModel item)
+		=> Mappings.Count(mapping => item.MemberItemIds.Contains(mapping.Source.ItemId));
+
+	// 解散来源身份：从来源表摘掉 + 删掉它名下的映射（那些目标回到未映射）。
+	private void DissolveSource(RuntimeArmorChoiceViewModel item)
+	{
+		foreach (var memberId in item.MemberItemIds) sourceItemIds.Remove(memberId);
+		foreach (var mapping in Mappings.Where(candidate => item.MemberItemIds.Contains(candidate.Source.ItemId)).ToArray())
+			Mappings.Remove(mapping);
+		if (selectedProviderId is { } openProviderId && item.MemberItemIds.Contains(openProviderId)) CloseProvider();
+	}
+
+	// 一次可能降级好几个来源：逐条列出来，让用户看清"哪些会被解散、各自带着几个目标"。
+	private bool ConfirmDissolve(IReadOnlyList<RuntimeArmorChoiceViewModel> sources)
+	{
+		var lines = sources.Select(item => $"「{item.Name}」已经作为视觉来源并映射了 {TargetCountOf(item)} 个对象");
+		var message = string.Join(Environment.NewLine, lines)
+			+ Environment.NewLine + Environment.NewLine
+			+ "重定向将会使这些条目被释放（它们名下的映射会被解除，不会跟到新来源去）。";
+		return Views.AppDialog.Show(
+			message,
+			"把视觉来源改成映射目标",
+			System.Windows.MessageBoxButton.YesNo,
+			System.Windows.MessageBoxImage.Warning) == System.Windows.MessageBoxResult.Yes;
 	}
 
 	public bool CanReleaseToAvailable(IReadOnlyList<string> keys)
@@ -1594,64 +1655,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		}
 		ProviderDetailItems.ReplaceWith(detailItems, ListTransitionKind.Replace);
 
-		var mappedRows = new List<RuntimeArmorChoiceViewModel>();
-		foreach (var provider in Providers)
-		{
-			var providerTargetIds = Mappings
-				.Where(mapping => provider.MemberItemIds.Contains(mapping.Source.ItemId))
-				.Select(mapping => mapping.Target.ItemId)
-				.Distinct()
-				.ToArray();
-			if (providerTargetIds.Length == 0) continue;
-
-			var targetEntries = ResolveTargetCatalogEntries(providerTargetIds);
-			foreach (var plan in ArmorMappingPickerPlanner.BuildTargetGroupPlans(targetEntries, cachedTwinIndex))
-			{
-				var mappedPlan = plan with
-				{
-					SelectionKey = $"mapped:{provider.SelectionKey}:{plan.SelectionKey}",
-					Tab = ArmorMappingPickerTab.Mapped,
-					IsBlocked = false,
-					BlockedReason = null,
-				};
-				var row = BuildChoiceFromPlan(mappedPlan);
-				row.SetMappedOverviewPresentation(
-					provider.SelectionKey,
-					provider.Name,
-					plan.TypeLabel,
-					plan.IsTwinBundle,
-					plan.TwinSetCount,
-					plan.TwinBundleNote);
-				mappedRows.Add(row);
-			}
-		}
-		availableChoicesByTab[ArmorMappingPickerTab.Mapped] = mappedRows
-			.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
-			.ThenBy(row => row.MappedProviderName, StringComparer.CurrentCultureIgnoreCase)
-			.ThenBy(row => row.SelectionKey, StringComparer.Ordinal)
-			.ToArray();
-
-		// 已映射的行单独留一份可查表：它们**不**进 allAvailableChoicesByKey（那张表是"未管理护甲"），
-		// 但重定向（把某个已映射的护甲挪到另一个视觉来源）需要能按行键找回它们。
-		mappedChoicesByKey.Clear();
-		foreach (var row in availableChoicesByTab[ArmorMappingPickerTab.Mapped])
-			mappedChoicesByKey[row.SelectionKey] = row;
-
-		var managedOwners = new Dictionary<uint, string>();
-		foreach (var provider in Providers)
-		{
-			foreach (var memberId in provider.MemberItemIds)
-				managedOwners[memberId] = "作为视觉来源使用中";
-		}
-		foreach (var mapping in Mappings)
-		{
-			var providerName = Providers
-				.FirstOrDefault(provider => provider.MemberItemIds.Contains(mapping.Source.ItemId))
-				?.Name ?? mapping.Source.Name;
-			managedOwners[mapping.Target.ItemId] = $"已映射到 {providerName}";
-		}
-		cachedManagedOwnerByItemId = managedOwners;
-
 		UpdateAvailablePickerProjection(forceReplaceActiveTab: true);
 
 		OnPropertyChanged(nameof(ProvidersSummary));
@@ -1705,7 +1708,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 		var projection = ArmorMappingPickerPlanner.EvaluateProjection(
 			cachedPickerBaseCatalog,
-			cachedManagedOwnerByItemId,
+			NoManagedOwners,
 			activeSelectedKeys,
 			isSelectedProviderTwoSlotCompressed,
 			isSelectedProviderThreeSlotCompressed,
@@ -1717,12 +1720,15 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		SyncPickerTab(ArmorMappingPickerTab.Helmet, projection.Helmets, activeSelectedKeys, forceReplaceActiveTab);
 
 		allAvailableChoicesByKey.Clear();
-		foreach (var (tab, list) in availableChoicesByTab)
+		foreach (var (_, list) in availableChoicesByTab)
 		{
-			if (tab == ArmorMappingPickerTab.Mapped) continue;
 			foreach (var item in list)
 				allAvailableChoicesByKey[item.SelectionKey] = item;
 		}
+
+		// 每行自带占用状态：是视觉来源、还是被映射到了某个来源。可见性只读这个状态，
+		// 不再靠"另外一张投影表"来表达"它被用掉了"。
+		ApplyOccupancy();
 
 		var activeRows = BuildVisibleAvailableRows();
 		if (forceReplaceActiveTab || !AreSameReferences(AvailableArmors, activeRows))
@@ -1730,6 +1736,36 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 		RefreshSearchFilterState();
 		OnPropertyChanged(nameof(AvailableSummary));
+	}
+
+	// 把"谁在被占用"标到行上：视觉来源（来源表 / 任何映射的来源 / 素体）与已映射的目标。
+	// 这是右侧表唯一的"占用"表达——规划器那边已经不再删行、不再置灰。
+	private void ApplyOccupancy()
+	{
+		var sourceMemberIds = new HashSet<uint>(sourceItemIds);
+		foreach (var model in CustomModels) sourceMemberIds.Add(SyntheticModelItemId(model.Key));
+		foreach (var mapping in Mappings) sourceMemberIds.Add(mapping.Source.ItemId);
+
+		var mappedSourceByTarget = new Dictionary<uint, RuntimeArmorChoiceViewModel>();
+		foreach (var mapping in Mappings)
+			mappedSourceByTarget.TryAdd(mapping.Target.ItemId, mapping.Source);
+
+		foreach (var tab in PickerTabOrder)
+		{
+			foreach (var row in availableChoicesByTab.GetValueOrDefault(tab) ?? [])
+			{
+				var isSource = row.MemberItemIds.Any(sourceMemberIds.Contains);
+				RuntimeArmorChoiceViewModel? mappedSource = null;
+				foreach (var memberId in row.MemberItemIds)
+				{
+					if (!mappedSourceByTarget.TryGetValue(memberId, out var source)) continue;
+					mappedSource = source;
+					break;
+				}
+
+				row.ApplyOccupancy(isSource, mappedSource?.SelectionKey, mappedSource?.Name);
+			}
+		}
 	}
 
 	private void SyncPickerTab(
@@ -2703,11 +2739,10 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public bool IsCustomModel { get; }
 	// 自定义素体没有"解除"（它本来就不在映射里），普通护甲没有"重命名"。
 	// 这条规则以前散在面板 XAML 的转换器里。
-	// 已映射那一类的行是同一批护甲的"另一个视角"：它已经在映射里了，再点"注册"没有意义。
-	public ModListRowAction HiddenActions => (IsCustomModel
+	// 被占用的行（来源 / 已映射目标）**不再**因此屏蔽「注册」：把来源改成另一个来源的目标是有效操作。
+	public ModListRowAction HiddenActions => IsCustomModel
 		? ModListRowAction.ArmorRelease
-		: ModListRowAction.ArmorRenameCustomModel)
-		| (PickerTab == ArmorMappingPickerTab.Mapped ? ModListRowAction.ArmorAssign : ModListRowAction.None);
+		: ModListRowAction.ArmorRenameCustomModel;
 	public string? ModelKey { get; }
 	public GameDataEquipmentKitKind KitKind { get; }
 	public uint SetId { get; }
@@ -2740,8 +2775,25 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public string ItemIdText => ItemId.ToString(CultureInfo.InvariantCulture);
 	public string? MappedProviderKey { get; private set; }
 	public string? MappedProviderName { get; private set; }
+	// 占用状态：这一行是不是视觉来源、有没有被映射到某个来源。
+	// 右侧表用它们决定"默认隐不隐藏"，而不是靠另做一张投影表。
+	public bool IsSource { get; private set; }
+	public bool IsMapped => MappedProviderKey is not null;
+	public bool IsHidden => IsSource || IsMapped;
 	public bool IsSelected { get => isSelected; set => SetField(ref isSelected, value); }
 	public ModListRowPresentation RowPresentation { get => rowPresentation; private set => SetField(ref rowPresentation, value); }
+
+	public void ApplyOccupancy(bool isSource, string? providerKey, string? providerName)
+	{
+		if (IsSource == isSource && string.Equals(MappedProviderKey, providerKey, StringComparison.Ordinal)) return;
+		IsSource = isSource;
+		MappedProviderKey = providerKey;
+		MappedProviderName = providerName;
+		OnPropertyChanged(nameof(IsSource));
+		OnPropertyChanged(nameof(IsMapped));
+		OnPropertyChanged(nameof(IsHidden));
+	}
+
 
 	private string? lowPollutionWarning;
 	private string? lowPollutionNote;

@@ -85,8 +85,8 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 		// **选中它**（意思是从别的来源挪过来），不能再顺手把左边的来源换掉。
 		if (viewModel.IsProviderDetailOpen) return;
 
-		// 平时（左侧是来源列表）：点已映射的行就是"这个护甲映射到谁"——跳到左侧对应来源。
-		if (e.Item is RuntimeArmorChoiceViewModel { PickerTab: ArmorMappingPickerTab.Mapped } item)
+		// 平时（左侧是来源列表）：点已被映射的行就是"这个护甲映射到谁"——跳到左侧对应来源。
+		if (e.Item is RuntimeArmorChoiceViewModel { MappedProviderKey: not null } item)
 			viewModel.NavigateToMappedProvider(item);
 	}
 
