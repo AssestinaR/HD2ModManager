@@ -53,7 +53,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	// 并集就是全集，界面必须如实反映"没有筛选"，而不是留一个说不清的状态。
 	private bool unitOverrideHitFilter;
 	private bool unitOverrideMissFilter;
-	// 四个选项卡也是标签（套装 / 护甲 / 头盔 / 已映射），**互不排斥**；一个都没选 = 四类全显示。
+	// 四个选项卡也是标签，**互不排斥**，但方向上不对称：
+	//   · 套装 / 护甲 / 头盔 = 缩窄（都不选 = 三类全要）
+	//   · 已映射 = 扩宽（默认不列，选中才把"已经映射过"的行放出来）
 	private readonly HashSet<ArmorMappingPickerTab> selectedPickerTabs = new();
 	private uint? selectedProviderId;
 	private IReadOnlyList<uint> selectedProviderMemberIds = [];
@@ -151,8 +153,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		RemoveCustomModelCommand = new RelayCommand(
 			parameter => RemoveCustomModel(parameter as RuntimeArmorModelEditorViewModel),
 			_ => !IsBusy);
-		// 六枚标签：四个选项卡 + 两个 Unit 覆盖方向。顺序与旧版从左到右一致；
-		// 互不排斥，全都不选 = 没有筛选（"诚实翻译"）。
+		// 六枚标签：四个选项卡 + 两个 Unit 覆盖方向。顺序与旧版从左到右一致；互不排斥。
+		// 「已映射」与「含选项」同一个模型：默认不列，选中才放出来。
 		SearchFilters = new[]
 		{
 			new ModListSearchFilter("set", "套装",
@@ -170,7 +172,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			new ModListSearchFilter("mapped", "已映射",
 				() => IsPickerTabSelected(ArmorMappingPickerTab.Mapped),
 				value => SetPickerTabSelected(ArmorMappingPickerTab.Mapped, value),
-				() => $"已经映射到某个视觉来源的护甲 · {CountFilteredTabItems(ArmorMappingPickerTab.Mapped)} 项（点击行会跳到左侧来源）"),
+				() => $"把已经映射到某个视觉来源的护甲也列出来（默认不列）· {CountFilteredTabItems(ArmorMappingPickerTab.Mapped)} 项 · 点击行会跳到左侧来源"),
 			new ModListSearchFilter("unit-hit", "Unit 命中",
 				() => IsUnitOverrideSelected(hit: true),
 				value => SetUnitOverrideSelected(hit: true, value),
@@ -288,15 +290,29 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	{
 		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var rows = new List<RuntimeArmorChoiceViewModel>();
+
+		// 套装 / 护甲 / 头盔 是三个"缩窄"标签：三个都不选就是三类全要。
+		var narrowed = selectedPickerTabs.Any(tab => tab != ArmorMappingPickerTab.Mapped);
 		foreach (var tab in PickerTabOrder)
 		{
-			if (selectedPickerTabs.Count != 0 && !selectedPickerTabs.Contains(tab)) continue;
+			if (tab == ArmorMappingPickerTab.Mapped) continue;
+			if (narrowed && !selectedPickerTabs.Contains(tab)) continue;
+			Append(tab);
+		}
+
+		// 「已映射」是"扩宽"标签，与「含选项」同一个模型：默认**不列**已经映射过的条目，
+		// 选中它才把这些隐藏行放出来——而且它只加不减，不会反过来把上面三类筛掉。
+		if (selectedPickerTabs.Contains(ArmorMappingPickerTab.Mapped)) Append(ArmorMappingPickerTab.Mapped);
+
+		return rows;
+
+		void Append(ArmorMappingPickerTab tab)
+		{
 			foreach (var row in availableChoicesByTab.GetValueOrDefault(tab) ?? [])
 			{
 				if (seen.Add(row.SelectionKey)) rows.Add(row);
 			}
 		}
-		return rows;
 	}
 
 	public string ProviderDetailSearchText
