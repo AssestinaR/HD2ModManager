@@ -14,6 +14,29 @@ public sealed record StoragePaths(string AppRootDirectory, string? ModsRootDirec
 	// Pending deletion metadata belongs to the library because it describes physical roots under this library.
 	public string PendingDeletionPath => Path.Combine(ModsDirectory, "pending-deletions.json");
 	public string DeletionTrashDirectory => Path.Combine(ModsDirectory, ".hd2modmanager-trash");
+
+	/// <summary>
+	/// 外部包认领后源目录的去处：<c>&lt;库&gt;.adopted</c>，与库**同级**，不在库里面。
+	/// <para>
+	/// <b>为什么必须放到库外。</b>认领的源目录本身是「包名/选项/patch」的嵌套形状，
+	/// 放进 <see cref="DeletionTrashDirectory"/> 就等于让库根长期背着一棵嵌套树：
+	/// 残留清理把它列进排除名单、对账把它当保留目录，而回收站本身从来没有清理入口——
+	/// 用户删掉认领出来的节点后，那份副本仍持有数据（硬链接数 2 → 1），空间永远不释放。
+	/// 放到同级目录后，<c>mods\</c> 底下彻底没有嵌套目录，也不需要再跟扫描/清理的排除名单
+	/// 长期绑定。同卷 ⇒ 仍然是改名，硬链接照旧。
+	/// </para>
+	/// </summary>
+	public string AdoptedArchiveDirectory
+	{
+		get
+		{
+			var library = ModsDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+			var parent = Path.GetDirectoryName(library);
+			var name = Path.GetFileName(library);
+			if (string.IsNullOrEmpty(name)) return Path.Combine(AppRootDirectory, "adopted");
+			return Path.Combine(string.IsNullOrEmpty(parent) ? AppRootDirectory : parent, name + ".adopted");
+		}
+	}
 	// Profiles belong to a Mod library because their entries reference that library's node IDs.
 	public string ProfilesPath => Path.Combine(ModsDirectory, "profiles.json");
 	public string LegacyProfilesPath => Path.Combine(DataDirectory, "profiles.json");
