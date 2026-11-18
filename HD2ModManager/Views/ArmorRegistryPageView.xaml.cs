@@ -79,10 +79,14 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 
 	private void OnAvailableRowClicked(object? sender, ModListRowEventArgs e)
 	{
-		// 已映射的行是"这个护甲被映射到哪"的视角：点它就跳到左侧对应的视觉来源。
-		// 标签不互斥之后一行到底属于哪一类，只能由行自己说了算。
-		if (e.Item is RuntimeArmorChoiceViewModel { PickerTab: ArmorMappingPickerTab.Mapped } item
-			&& DataContext is ArmorRegistryPageViewModel viewModel)
+		if (DataContext is not ArmorRegistryPageViewModel viewModel) return;
+
+		// 左侧停在某个来源上时，右侧是"这个来源的目标列表"：此刻点一枚已映射的行是在
+		// **选中它**（意思是从别的来源挪过来），不能再顺手把左边的来源换掉。
+		if (viewModel.IsProviderDetailOpen) return;
+
+		// 平时（左侧是来源列表）：点已映射的行就是"这个护甲映射到谁"——跳到左侧对应来源。
+		if (e.Item is RuntimeArmorChoiceViewModel { PickerTab: ArmorMappingPickerTab.Mapped } item)
 			viewModel.NavigateToMappedProvider(item);
 	}
 

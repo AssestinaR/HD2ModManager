@@ -68,6 +68,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private IReadOnlyDictionary<uint, string> cachedManagedOwnerByItemId = new Dictionary<uint, string>();
 	private readonly Dictionary<ArmorMappingPickerTab, IReadOnlyList<RuntimeArmorChoiceViewModel>> availableChoicesByTab = new();
 	private readonly Dictionary<string, RuntimeArmorChoiceViewModel> allAvailableChoicesByKey = new(StringComparer.OrdinalIgnoreCase);
+	// 「已映射」标签下的行（键形如 mapped:<来源>:<护甲>）。它们不是"未管理护甲"，所以不进上面那张表；
+	// 但"重定向到另一个视觉来源"这件事必须能按行键把它们找回来，所以单独存一份。
+	private readonly Dictionary<string, RuntimeArmorChoiceViewModel> mappedChoicesByKey = new(StringComparer.OrdinalIgnoreCase);
 	private bool isSelectedProviderTwoSlotCompressed;
 	private bool isSelectedProviderThreeSlotCompressed;
 	private IReadOnlyDictionary<string, ArmorDisplayFacts> cachedArmorDisplayFacts = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
@@ -1037,14 +1040,13 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var scope = IsProviderDetailOpen ? ArmorRegistryScopes.AvailableAsTarget : ArmorRegistryScopes.Available;
 		// 标签不互斥之后，"当前看得见的行"就是唯一判据：看不见的行不该保持选中，
 		// 否则底栏的注册/解除会作用到用户根本看不到的东西上。
-		// 已映射的行不参与选择——它们的键不在可分配表里（allAvailableChoicesByKey 只收前三个标签）。
+		// 能不能真的被选中，交给 TryResolveAssignable 判定——「已映射」的行只有在打开了一个来源时
+		// 才可选（那时选中它们意味着"重定向到该来源"）。
 		var visibleKeys = AvailableArmors
 			.Select(item => item.SelectionKey)
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var combinedKeys = selectedKeys
-			.Where(key => visibleKeys.Contains(key)
-				&& allAvailableChoicesByKey.TryGetValue(key, out var item)
-				&& !item.IsBlocked)
+			.Where(key => visibleKeys.Contains(key) && TryResolveAssignable(key, out _))
 			.Distinct(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 		ApplyMutuallyExclusiveSelection(scope, AvailableArmors, combinedKeys);
@@ -1270,11 +1272,36 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var items = new List<RuntimeArmorChoiceViewModel>(keys.Count);
 		foreach (var key in keys)
 		{
-			if (!allAvailableChoicesByKey.TryGetValue(key, out var item) || item.IsBlocked)
-				return null;
+			if (!TryResolveAssignable(key, out var item)) return null;
 			items.Add(item);
 		}
 		return items.ToArray();
+	}
+
+	/// <summary>
+	/// 一枚右侧行能不能被注册。未管理的护甲随时可以；**「已映射」的行只有"有地方可去"时才行**——
+	/// 它已经挂在某个来源上了，对它能做的唯一操作是重定向到另一个来源，那必须先打开那个来源
+	/// （右侧此时显示的是它的目标列表）。没有目的地就把它当普通护甲收下，只会造出一个
+	/// "既在别人的目标里、又要当来源"的自相矛盾状态。
+	/// </summary>
+	private bool TryResolveAssignable(string key, out RuntimeArmorChoiceViewModel item)
+	{
+		if (allAvailableChoicesByKey.TryGetValue(key, out var plain) && !plain.IsBlocked)
+		{
+			item = plain;
+			return true;
+		}
+
+		if (selectedProviderId is not null
+			&& mappedChoicesByKey.TryGetValue(key, out var mapped)
+			&& !mapped.IsBlocked)
+		{
+			item = mapped;
+			return true;
+		}
+
+		item = null!;
+		return false;
 	}
 
 	public bool CanAssignFromAvailable(IReadOnlyList<string> keys)
@@ -1338,7 +1365,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		foreach (var id in ids)
 		{
 			if (!Choices.TryGetValue(id, out var targetChoice)
-				|| Mappings.Any(mapping => mapping.Target.ItemId == id)
 				|| Providers.Any(provider => provider.MemberItemIds.Contains(id))) continue;
 			var sourceId = RuntimeArmorMappingPairing.FindUniqueSourceForTarget(sourceMembers, targetChoice.KitKind);
 			if (sourceId is null || sourceId == id || !Choices.TryGetValue(sourceId.Value, out var sourceChoice))
@@ -1346,6 +1372,17 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				unpaired++;
 				continue;
 			}
+
+			// 已经挂在这个来源下：幂等跳过，不重复建行。
+			// 挂在**别的**来源下：这是"重定向"——把那条映射挪过来，而不是再添一条。
+			// （同一个护甲同时挂在两个来源下是错的：运行时只会认其中一条，用户看到的是"改了没生效"。）
+			var existing = Mappings.FirstOrDefault(mapping => mapping.Target.ItemId == id);
+			if (existing is not null)
+			{
+				if (existing.Source.ItemId == sourceId) continue;
+				Mappings.Remove(existing);
+			}
+
 			Mappings.Add(new RuntimeArmorMappingRowViewModel(
 				targetChoice,
 				sourceChoice,
@@ -1589,6 +1626,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			.ThenBy(row => row.MappedProviderName, StringComparer.CurrentCultureIgnoreCase)
 			.ThenBy(row => row.SelectionKey, StringComparer.Ordinal)
 			.ToArray();
+
+		// 已映射的行单独留一份可查表：它们**不**进 allAvailableChoicesByKey（那张表是"未管理护甲"），
+		// 但重定向（把某个已映射的护甲挪到另一个视觉来源）需要能按行键找回它们。
+		mappedChoicesByKey.Clear();
+		foreach (var row in availableChoicesByTab[ArmorMappingPickerTab.Mapped])
+			mappedChoicesByKey[row.SelectionKey] = row;
 
 		var managedOwners = new Dictionary<uint, string>();
 		foreach (var provider in Providers)

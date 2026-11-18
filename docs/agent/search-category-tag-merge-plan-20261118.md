@@ -389,4 +389,28 @@ Manager 没有测试工程，而这次的风险几乎全在"状态归约"。把�
 
 这与「含选项」构成同一条规则：**默认隐藏的条目由标签放出来，标签不负责把它们再筛掉。**
 
+### 11.7 追加修正（同日）：「已映射」的行变成可选中 / 可拖放 = 重定向
+
+用户指出：已映射的行被选中并拖到另一个来源，本身就是"重定向"——这比先解除再重新注册省事得多。
+看了当前逻辑，卡点有三处：
+
+1. `ResolveAssignableItems` 只查 `allAvailableChoicesByKey`（只收未管理的三类），已映射的行根本解析不到
+   → `CanAssignFromAvailable` 恒 false → 拖放被拒；
+2. `ApplyAvailableSelection` 同样只认那张表，所以已映射的行连"选中"都留不住；
+3. `AssignFromAvailable` 里有一句 `Mappings.Any(mapping => mapping.Target.ItemId == id) → continue`：
+   哪怕解析到了，已经映射过的护甲会被**静默跳过**——这正是"重定向"做不成的原因。
+
+改法：
+
+- 新增 `mappedChoicesByKey`（键 `mapped:<来源>:<护甲>`），只服务"按行键找回已映射的行"；
+- `TryResolveAssignable` 统一判定：未管理的行随时可注册；**已映射的行只有在打开了一个来源时**才可注册
+  （那时它才有目的地，否则会造出"既是目标又要当来源"的自相矛盾状态）；
+- `AssignFromAvailable` 把"跳过"换成"搬走"：同一来源 → 幂等跳过；别的来源 → `Mappings.Remove(旧)` 再 `Add(新)`；
+- `ApplyAvailableSelection` 改用 `TryResolveAssignable`，所以选中能留住，底栏「注册为映射目标」与拖放都能用；
+- 行点击：左侧停在某个来源上时点已映射的行 = **选中**（别顺手把左侧来源换掉）；平时仍是跳到左侧来源。
+
+副作用（照实说）：把某个来源名下**最后一条**映射挪走之后，那个来源会从左侧列表里消失——
+它本来就只靠映射存在（和「解除映射目标」同一个后果），不是本次新引入的。
+
+
 
