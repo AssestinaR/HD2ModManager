@@ -176,7 +176,6 @@
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0"
@@ -203,16 +202,7 @@
                                                    FontSize="12"
                                                    Margin="0,0,7,0"
                                                    Visibility="{Binding RowPresentation.HasWarning, Converter={StaticResource BoolToVis}}"/>
-                                        <!-- 行**自身**的状态（护甲映射页：视觉来源 · n 个目标）。跟类型/序号一起靠左。 -->
                                         <TextBlock Grid.Column="4"
-                                                   Text="{Binding RowPresentation.OccupancyLabel}"
-                                                   Foreground="{Binding RowPresentation.OccupancyTone, Converter={StaticResource RowToneBrush}}"
-                                                   FontSize="12"
-                                                   Margin="0,0,7,0"
-                                                   TextWrapping="NoWrap"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   Visibility="{Binding RowPresentation.HasOccupancy, Converter={StaticResource BoolToVis}}"/>
-                                        <TextBlock Grid.Column="5"
                                                    Text="{Binding RowPresentation.Summary}"
                                                    Foreground="{StaticResource TextSecondary}"
                                                    FontSize="12"
@@ -222,12 +212,19 @@
                                                    TextWrapping="NoWrap"
                                                    TextTrimming="CharacterEllipsis"
                                                    Visibility="{Binding RowPresentation.HasSummary, Converter={StaticResource BoolToVis}}"/>
-                                        <!-- 靠右的一组：它**指向别人**的关系（已映射到 X）与说明（低污染 / 孪生）。
-                                             放在同一格、整体右对齐，"已映射到"才不会和左边的自身状态混在一起。 -->
-                                        <StackPanel Grid.Column="6"
+                                        <!-- 靠右的一组：这一行**在关系里处于什么位置**（视觉来源 / 已映射到谁）+ 说明（低污染 / 孪生）。
+                                             放在同一格、整体右对齐：左边那几格回答"这一行是什么"，右边回答"它挂在谁身上"。 -->
+                                        <StackPanel Grid.Column="5"
                                                     Orientation="Horizontal"
                                                     HorizontalAlignment="Right"
                                                     VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding RowPresentation.OccupancyLabel}"
+                                                       Foreground="{Binding RowPresentation.OccupancyTone, Converter={StaticResource RowToneBrush}}"
+                                                       FontSize="12"
+                                                       Margin="0,0,7,0"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Visibility="{Binding RowPresentation.HasOccupancy, Converter={StaticResource BoolToVis}}"/>
                                             <TextBlock Text="{Binding RowPresentation.MappingLabel}"
                                                        Foreground="{Binding RowPresentation.MappingTone, Converter={StaticResource RowToneBrush}}"
                                                        FontSize="12"

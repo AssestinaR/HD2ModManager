@@ -2813,7 +2813,7 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		MappedProviderName = providerName;
 		RowPresentation = RowPresentation with
 		{
-			// 自身状态靠左，指向别人的关系靠右。
+			// 两者都靠右：左边回答"这一行是什么"，右边回答"它挂在谁身上"。
 			OccupancyLabel = occupancy,
 			OccupancyTone = ModListRowTone.Success,
 			MappingLabel = mapping,

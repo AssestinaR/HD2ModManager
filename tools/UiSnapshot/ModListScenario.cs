@@ -284,7 +284,7 @@ internal static class ModListScenario
         var panel = new ModListPanel
         {
             HeaderTitle = "占用标注探针",
-            HeaderSummary = "左：行自身状态 · 右：已映射到谁",
+            HeaderSummary = "靠右：视觉来源 · n 个目标 / 已映射到谁",
             ItemsSource = rows,
             SelectionPolicy = ModListSelectionPolicy.Multiple,
             RowActions = ModListRowAction.None,
