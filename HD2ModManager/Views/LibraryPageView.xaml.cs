@@ -96,12 +96,6 @@ namespace HD2ModManager.Views
                 shell.ClearTransientSelection();
         }
 
-        private void OnToggleOutdatedFilterClick(object sender, RoutedEventArgs e)
-        {
-            EnsureVM();
-            if (VM is not null) VM.ShowOnlyOutdated = !VM.ShowOnlyOutdated;
-        }
-
         private void OnSelectionRequested(object? sender, ModListSelectionRequestEventArgs e)
         {
             EnsureVM();
@@ -135,12 +129,6 @@ namespace HD2ModManager.Views
                 await shell.RemoveModsFromSelectedProfileAsync(e.SelectedKeys);
         }
 
-
-        private void OnToggleOptionFilterClick(object sender, RoutedEventArgs e)
-        {
-            EnsureVM();
-            if (VM is not null) VM.ShowOptions = !VM.ShowOptions;
-        }
 
         // 叠层、命中、淡入淡出已经由面板负责；这里只剩"放下之后做什么"和一句文案。
         private void OnRelationshipDropRequested(object? sender, ModListRelationshipDropEventArgs e)

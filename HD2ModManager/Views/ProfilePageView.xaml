@@ -2,20 +2,17 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views">
-    <UserControl.Resources>
-        <DataTemplate x:Key="ProfileSearchActions">
-            <StackPanel Orientation="Horizontal">
-                <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
-            </StackPanel>
-        </DataTemplate>
-    </UserControl.Resources>
+    <!--
+        配置页的标题卡同样只有"标题 / 搜索"两态：过时与各分类都是搜索框里的标签，
+        不再有单独的"分类模式"。
+    -->
     <local:ModListPanel x:Name="ProfileModList" ItemsSource="{Binding Items}"
                         CategoryFilter="{Binding Category}"
+                        SearchFilters="{Binding SearchFilters}"
                         HeaderTitle="{Binding CurrentProfileTitle}"
                         HeaderSummary="{Binding HeaderSummary}"
                         EmptyState="{Binding EmptyState}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
-                        SearchActionsTemplate="{StaticResource ProfileSearchActions}"
                         RowActions="Details, Category, ExportMod, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
                          RowActionInvoked="OnRowActionInvoked"
                          SelectionPolicy="Multiple"
@@ -31,16 +28,5 @@
                          TransitionStateChanged="OnListTransitionStateChanged"
                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick">
-        <local:ModListPanel.HeaderModes>
-            <!-- 分类是标题卡的一个可切换状态（第三态：标题 / 搜索 / 分类）。
-                 开关绑到**本页**的 Category.IsEnabled，所以点它只切换这一侧。 -->
-            <local:ModListHeaderMode Key="Categories"
-                                     ToggleToolTip="显示或隐藏分类"
-                                     ToggleIcon="{StaticResource RowIcon.Category}"
-                                     IsRequested="{Binding Category.IsEnabled, Mode=TwoWay}"
-                                     IsAvailable="{Binding Category.HasChips}">
-                <local:CategoryChipBar DataContext="{Binding Category}"/>
-            </local:ModListHeaderMode>
-        </local:ModListPanel.HeaderModes>
     </local:ModListPanel>
 </UserControl>

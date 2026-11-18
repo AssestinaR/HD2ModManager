@@ -280,6 +280,79 @@
         </Style.Triggers>
     </Style>
 
+    <!--
+        芯片形按钮（圆角 12 + 描边 + 悬停变色）。原来是 CategoryChipBar 里的内联样式：
+        分类模式删掉之后，「设置分类」按钮仍然要这个形状，所以抽成共享样式。
+        高度**固定 22**：它住在标题卡的 22 高那一行里，多出来半个像素就会把行撑开。
+    -->
+    <Style x:Key="AppTagChipButton" TargetType="Button">
+        <Setter Property="Height" Value="22"/>
+        <Setter Property="Padding" Value="9,1"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+        <Setter Property="Background" Value="{StaticResource SurfaceMuted}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource StrokeSubtle}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="12"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/>
+                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True"><Setter Property="Background" Value="{StaticResource SurfaceSelected}"/></Trigger>
+            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.55"/></Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!--
+        搜索框里的标签。**方角 + 1px 圆角**（不是胶囊）：搜索框容量有限，一切给信息密度让路。
+        整枚可点 = 删除，所以悬停直接给危险色，别让人以为点它是"选中"。
+    -->
+    <Style x:Key="AppSearchTagChip" TargetType="Button">
+        <Setter Property="Height" Value="18"/>
+        <Setter Property="Padding" Value="5,0"/>
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+        <Setter Property="Background" Value="{StaticResource SurfaceMuted}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource StrokeSubtle}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="1"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="{StaticResource StatusDanger}"/>
+                <Setter Property="Foreground" Value="{StaticResource StatusDanger}"/>
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True"><Setter Property="Background" Value="{StaticResource SurfaceSelected}"/></Trigger>
+        </Style.Triggers>
+    </Style>
+
     <Style x:Key="AppComboBoxItem" TargetType="ComboBoxItem">
         <Setter Property="MinHeight" Value="28"/>
         <Setter Property="Padding" Value="8,5"/>

@@ -20,12 +20,14 @@ namespace HD2ModManager.ViewModels;
 
 public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 {
-	private enum AvailableArmorUnitFilter
-	{
-		All,
-		HasEffectiveUnitOverride,
-		NoEffectiveUnitOverride,
-	}
+	// 四个选项卡的固定顺序（标签条按这个顺序排，与旧版从左到右一致）。
+	private static readonly ArmorMappingPickerTab[] PickerTabOrder =
+	[
+		ArmorMappingPickerTab.Set,
+		ArmorMappingPickerTab.Armor,
+		ArmorMappingPickerTab.Helmet,
+		ArmorMappingPickerTab.Mapped,
+	];
 
 	private readonly RuntimeArmorRegistryService service;
 	private readonly NotificationService notifications;
@@ -47,8 +49,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private string providersSearchText = string.Empty;
 	private string availableSearchText = string.Empty;
 	private string providerDetailSearchText = string.Empty;
-	private AvailableArmorUnitFilter availableArmorUnitFilter;
-	private ArmorMappingPickerTab selectedAvailableTab = ArmorMappingPickerTab.Set;
+	// Unit 覆盖筛选：两枚**互不排斥**的标签（命中 / 未命中）。都没选或都选中 = 不筛：
+	// 并集就是全集，界面必须如实反映"没有筛选"，而不是留一个说不清的状态。
+	private bool unitOverrideHitFilter;
+	private bool unitOverrideMissFilter;
+	// 四个选项卡也是标签（套装 / 护甲 / 头盔 / 已映射），**互不排斥**；一个都没选 = 四类全显示。
+	private readonly HashSet<ArmorMappingPickerTab> selectedPickerTabs = new();
 	private uint? selectedProviderId;
 	private IReadOnlyList<uint> selectedProviderMemberIds = [];
 	private readonly HashSet<uint> pendingProviderIds = [];
@@ -145,7 +151,35 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		RemoveCustomModelCommand = new RelayCommand(
 			parameter => RemoveCustomModel(parameter as RuntimeArmorModelEditorViewModel),
 			_ => !IsBusy);
-		SelectAvailableTabCommand = new RelayCommand(SelectAvailableTab);
+		// 六枚标签：四个选项卡 + 两个 Unit 覆盖方向。顺序与旧版从左到右一致；
+		// 互不排斥，全都不选 = 没有筛选（"诚实翻译"）。
+		SearchFilters = new[]
+		{
+			new ModListSearchFilter("set", "套装",
+				() => IsPickerTabSelected(ArmorMappingPickerTab.Set),
+				value => SetPickerTabSelected(ArmorMappingPickerTab.Set, value),
+				() => $"套装 · {CountFilteredTabItems(ArmorMappingPickerTab.Set)} 项"),
+			new ModListSearchFilter("armor", "护甲",
+				() => IsPickerTabSelected(ArmorMappingPickerTab.Armor),
+				value => SetPickerTabSelected(ArmorMappingPickerTab.Armor, value),
+				() => $"护甲 · {CountFilteredTabItems(ArmorMappingPickerTab.Armor)} 项"),
+			new ModListSearchFilter("helmet", "头盔",
+				() => IsPickerTabSelected(ArmorMappingPickerTab.Helmet),
+				value => SetPickerTabSelected(ArmorMappingPickerTab.Helmet, value),
+				() => $"头盔 · {CountFilteredTabItems(ArmorMappingPickerTab.Helmet)} 项"),
+			new ModListSearchFilter("mapped", "已映射",
+				() => IsPickerTabSelected(ArmorMappingPickerTab.Mapped),
+				value => SetPickerTabSelected(ArmorMappingPickerTab.Mapped, value),
+				() => $"已经映射到某个视觉来源的护甲 · {CountFilteredTabItems(ArmorMappingPickerTab.Mapped)} 项（点击行会跳到左侧来源）"),
+			new ModListSearchFilter("unit-hit", "Unit 命中",
+				() => IsUnitOverrideSelected(hit: true),
+				value => SetUnitOverrideSelected(hit: true, value),
+				"只看当前活动配置里真的生效了 Unit 覆盖的护甲"),
+			new ModListSearchFilter("unit-miss", "Unit 未命中",
+				() => IsUnitOverrideSelected(hit: false),
+				value => SetUnitOverrideSelected(hit: false, value),
+				"只看当前活动配置里没有生效 Unit 覆盖的护甲"),
+		};
 		// **没有"新增自定义素体"这个动作。**
 		//
 		// 素体不是一个能凭空造的对象：它是一套**已存在**的 Unit（来自某个 Mod 的 patch）。
@@ -188,57 +222,43 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			if (!SetField(ref availableSearchText, value ?? string.Empty)) return;
 			AvailableArmorsView.Refresh();
-			RaiseTabHeaderPropertiesChanged();
+			RefreshSearchFilterState();
 			OnPropertyChanged(nameof(AvailableSummary));
 		}
 	}
 
-	public ArmorMappingPickerTab SelectedAvailableTab => selectedAvailableTab;
-	public bool IsSetTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Set;
-	public bool IsArmorTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Armor;
-	public bool IsHelmetTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Helmet;
-	public bool IsMappedTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Mapped;
-	public string SetTabHeader => $"套装 ({CountFilteredTabItems(ArmorMappingPickerTab.Set)})";
-	public string ArmorTabHeader => $"护甲 ({CountFilteredTabItems(ArmorMappingPickerTab.Armor)})";
-	public string HelmetTabHeader => $"头盔 ({CountFilteredTabItems(ArmorMappingPickerTab.Helmet)})";
-	public string MappedTabHeader => $"已映射 ({CountFilteredTabItems(ArmorMappingPickerTab.Mapped)})";
+	// 搜索态标签条上的六枚标签：四个选项卡 + 两个 Unit 覆盖方向。全都**互不排斥**。
+	public IReadOnlyList<ModListSearchFilter> SearchFilters { get; }
 
-	public string AvailableArmorUnitFilterText => availableArmorUnitFilter switch
+	private bool IsPickerTabSelected(ArmorMappingPickerTab tab) => selectedPickerTabs.Contains(tab);
+
+	private void SetPickerTabSelected(ArmorMappingPickerTab tab, bool selected)
 	{
-		AvailableArmorUnitFilter.HasEffectiveUnitOverride => "Unit 覆盖：已命中",
-		AvailableArmorUnitFilter.NoEffectiveUnitOverride => "Unit 覆盖：未命中",
-		_ => "Unit 覆盖：全部",
-	};
+		var changed = selected ? selectedPickerTabs.Add(tab) : selectedPickerTabs.Remove(tab);
+		if (!changed) return;
+		RefreshAvailableRows();
+	}
 
-	public void SelectAvailableTab(object? parameter)
+	// 只选了一边才筛：两边都选（并集 = 全集）或都不选都是"没有筛选"。
+	private bool IsUnitOverrideFilterActive => unitOverrideHitFilter ^ unitOverrideMissFilter;
+
+	private bool IsUnitOverrideSelected(bool hit) => hit ? unitOverrideHitFilter : unitOverrideMissFilter;
+
+	private void SetUnitOverrideSelected(bool hit, bool value)
 	{
-		var next = parameter switch
-		{
-			ArmorMappingPickerTab tab => tab,
-			string text when Enum.TryParse<ArmorMappingPickerTab>(text, ignoreCase: true, out var parsed) => parsed,
-			_ => selectedAvailableTab,
-		};
-		if (next == selectedAvailableTab) return;
-
-		selectedAvailableTab = next;
-		OnPropertyChanged(nameof(SelectedAvailableTab));
-		OnPropertyChanged(nameof(IsSetTabSelected));
-		OnPropertyChanged(nameof(IsArmorTabSelected));
-		OnPropertyChanged(nameof(IsHelmetTabSelected));
-		OnPropertyChanged(nameof(IsMappedTabSelected));
-
-		var rows = availableChoicesByTab.GetValueOrDefault(selectedAvailableTab) ?? [];
-		var activeSelected = selectedAvailableTab != ArmorMappingPickerTab.Mapped
-			&& ArmorRegistryScopes.IsAvailable(selection.Scope)
-			? selection.SelectedIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
-			: null;
-		foreach (var row in rows)
-			row.IsSelected = activeSelected is not null && !row.IsBlocked && activeSelected.Contains(row.SelectionKey);
-
-		AvailableArmors.ReplaceWith(rows, ListTransitionKind.Replace);
+		if (IsUnitOverrideSelected(hit) == value) return;
+		if (hit) unitOverrideHitFilter = value;
+		else unitOverrideMissFilter = value;
 		AvailableArmorsView.Refresh();
+		RefreshSearchFilterState();
 		OnPropertyChanged(nameof(AvailableSummary));
 		OnPropertyChanged(nameof(AvailableEmptyMessage));
+	}
+
+	// 标签的选中态与提示（带数量）都跟着筛选结果变，改完状态刷一遍。
+	private void RefreshSearchFilterState()
+	{
+		foreach (var filter in SearchFilters) filter.RefreshSelection();
 	}
 
 	private int CountFilteredTabItems(ArmorMappingPickerTab tab)
@@ -254,26 +274,29 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		return count;
 	}
 
-	private void RaiseTabHeaderPropertiesChanged()
+	// 选中的标签变了：按顺序把它们的行并起来（去重），空选择 = 四类全显示。
+	private void RefreshAvailableRows()
 	{
-		OnPropertyChanged(nameof(SetTabHeader));
-		OnPropertyChanged(nameof(ArmorTabHeader));
-		OnPropertyChanged(nameof(HelmetTabHeader));
-		OnPropertyChanged(nameof(MappedTabHeader));
+		AvailableArmors.ReplaceWith(BuildVisibleAvailableRows(), ListTransitionKind.Replace);
+		AvailableArmorsView.Refresh();
+		RefreshSearchFilterState();
+		OnPropertyChanged(nameof(AvailableSummary));
+		OnPropertyChanged(nameof(AvailableEmptyMessage));
 	}
 
-	public void CycleAvailableArmorUnitFilter()
+	private IReadOnlyList<RuntimeArmorChoiceViewModel> BuildVisibleAvailableRows()
 	{
-		availableArmorUnitFilter = availableArmorUnitFilter switch
+		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var rows = new List<RuntimeArmorChoiceViewModel>();
+		foreach (var tab in PickerTabOrder)
 		{
-			AvailableArmorUnitFilter.All => AvailableArmorUnitFilter.HasEffectiveUnitOverride,
-			AvailableArmorUnitFilter.HasEffectiveUnitOverride => AvailableArmorUnitFilter.NoEffectiveUnitOverride,
-			_ => AvailableArmorUnitFilter.All,
-		};
-		OnPropertyChanged(nameof(AvailableArmorUnitFilterText));
-		AvailableArmorsView.Refresh();
-		RaiseTabHeaderPropertiesChanged();
-		OnPropertyChanged(nameof(AvailableSummary));
+			if (selectedPickerTabs.Count != 0 && !selectedPickerTabs.Contains(tab)) continue;
+			foreach (var row in availableChoicesByTab.GetValueOrDefault(tab) ?? [])
+			{
+				if (seen.Add(row.SelectionKey)) rows.Add(row);
+			}
+		}
+		return rows;
 	}
 
 	public string ProviderDetailSearchText
@@ -413,21 +436,23 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		: catalogEmptyReason ?? "将右侧一个护甲拖到这里，设为视觉来源。";
 	public string AvailableEmptyMessage => isLoadingCatalog
 		? "正在读取护甲目录…"
-		: IsMappedTabSelected
-			? "暂无已映射的原版护甲。"
-			: catalogEmptyReason ?? "所有护甲都已分配为视觉来源或映射目标。";
+		: catalogEmptyReason ?? "所有护甲都已分配为视觉来源或映射目标。";
 	public string RegistryPath => service.RegistryRoot;
 	public string WorkspacePath => service.WorkspacePath;
 	public string ProvidersSummary => providersSearchText.Length == 0
 		? $"{Providers.Count} 个视觉来源"
 		: $"{ProvidersView.Cast<object>().Count()} / {Providers.Count} 个视觉来源";
-	public string AvailableSummary => IsMappedTabSelected
-		? (availableSearchText.Length == 0 && availableArmorUnitFilter == AvailableArmorUnitFilter.All
-			? $"{AvailableArmors.Count} 项已映射 · 点击跳转到左侧 Mod"
-			: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 项已映射")
-		: (availableSearchText.Length == 0 && availableArmorUnitFilter == AvailableArmorUnitFilter.All
-			? $"{AvailableArmors.Count} 项可选"
-			: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 项可选");
+	// 筛选过就报"可见 / 总数"，没筛选就只报总数——数字自己会说明有没有在筛。
+	public string AvailableSummary
+	{
+		get
+		{
+			var visible = AvailableArmorsView.Cast<object>().Count();
+			var total = AvailableArmors.Count;
+			var filtered = availableSearchText.Length != 0 || IsUnitOverrideFilterActive || selectedPickerTabs.Count != 0;
+			return filtered ? $"{visible} / {total} 项" : $"{total} 项";
+		}
+	}
 	public string ProviderDetailTitle => selectedProviderId is { } id
 		? Providers.FirstOrDefault(item => item.MemberItemIds.SequenceEqual(selectedProviderMemberIds))?.Name
 			?? (selectedProviderMemberIds.Count > 1
@@ -467,7 +492,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public AsyncRelayCommand ApplyCommand { get; }
 	public RelayCommand OpenRegistryFolderCommand { get; }
 	public RelayCommand RemoveCustomModelCommand { get; }
-	public RelayCommand SelectAvailableTabCommand { get; }
 
 	// 页面首次打开：目录、快照与覆盖事实都还没有，走一次完整加载。
 	// 加载是单飞的（见 EnsureCatalogLoadedAsync），所以它与启动预热**共用同一次**。
@@ -995,23 +1019,16 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public void ApplyAvailableSelection(IReadOnlyList<string> selectedKeys)
 	{
 		var scope = IsProviderDetailOpen ? ArmorRegistryScopes.AvailableAsTarget : ArmorRegistryScopes.Available;
-		var currentTabKeys = AvailableArmors
+		// 标签不互斥之后，"当前看得见的行"就是唯一判据：看不见的行不该保持选中，
+		// 否则底栏的注册/解除会作用到用户根本看不到的东西上。
+		// 已映射的行不参与选择——它们的键不在可分配表里（allAvailableChoicesByKey 只收前三个标签）。
+		var visibleKeys = AvailableArmors
 			.Select(item => item.SelectionKey)
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);
-		var validActiveKeys = selectedKeys
-			.Where(key => currentTabKeys.Contains(key)
+		var combinedKeys = selectedKeys
+			.Where(key => visibleKeys.Contains(key)
 				&& allAvailableChoicesByKey.TryGetValue(key, out var item)
 				&& !item.IsBlocked)
-			.ToArray();
-		var otherTabSelectedKeys = ArmorRegistryScopes.IsAvailable(selection.Scope)
-			? selection.SelectedIds
-				.Where(key => allAvailableChoicesByKey.TryGetValue(key, out var item)
-					&& !item.IsBlocked
-					&& item.PickerTab != selectedAvailableTab)
-				.ToArray()
-			: [];
-		var combinedKeys = validActiveKeys
-			.Concat(otherTabSelectedKeys)
 			.Distinct(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 		ApplyMutuallyExclusiveSelection(scope, AvailableArmors, combinedKeys);
@@ -1644,11 +1661,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				allAvailableChoicesByKey[item.SelectionKey] = item;
 		}
 
-		var activeRows = availableChoicesByTab.GetValueOrDefault(selectedAvailableTab) ?? [];
+		var activeRows = BuildVisibleAvailableRows();
 		if (forceReplaceActiveTab || !AreSameReferences(AvailableArmors, activeRows))
 			AvailableArmors.ReplaceWith(activeRows, ListTransitionKind.Replace);
 
-		RaiseTabHeaderPropertiesChanged();
+		RefreshSearchFilterState();
 		OnPropertyChanged(nameof(AvailableSummary));
 	}
 
@@ -1802,16 +1819,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		=> item is RuntimeArmorChoiceViewModel choice
 			&& MatchesSearch(choice, providersSearchText);
 
-	private bool FilterAvailableArmor(object item)
+	public bool FilterAvailableArmor(object item)
 	{
 		if (item is not RuntimeArmorChoiceViewModel choice || !MatchesSearch(choice, availableSearchText))
 			return false;
-		return availableArmorUnitFilter switch
-		{
-			AvailableArmorUnitFilter.HasEffectiveUnitOverride => choice.HasEffectiveUnitOverride == true,
-			AvailableArmorUnitFilter.NoEffectiveUnitOverride => choice.HasEffectiveUnitOverride == false,
-			_ => true,
-		};
+		if (!IsUnitOverrideFilterActive) return true;
+		if (unitOverrideHitFilter && choice.HasEffectiveUnitOverride == true) return true;
+		if (unitOverrideMissFilter && choice.HasEffectiveUnitOverride == false) return true;
+		return false;
 	}
 
 	private bool FilterProviderDetailItem(object item)
@@ -2627,9 +2642,11 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public bool IsCustomModel { get; }
 	// 自定义素体没有"解除"（它本来就不在映射里），普通护甲没有"重命名"。
 	// 这条规则以前散在面板 XAML 的转换器里。
-	public ModListRowAction HiddenActions => IsCustomModel
+	// 已映射那一类的行是同一批护甲的"另一个视角"：它已经在映射里了，再点"注册"没有意义。
+	public ModListRowAction HiddenActions => (IsCustomModel
 		? ModListRowAction.ArmorRelease
-		: ModListRowAction.ArmorRenameCustomModel;
+		: ModListRowAction.ArmorRenameCustomModel)
+		| (PickerTab == ArmorMappingPickerTab.Mapped ? ModListRowAction.ArmorAssign : ModListRowAction.None);
 	public string? ModelKey { get; }
 	public GameDataEquipmentKitKind KitKind { get; }
 	public uint SetId { get; }

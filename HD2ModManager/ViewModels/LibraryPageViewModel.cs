@@ -72,6 +72,13 @@ namespace HD2ModManager.ViewModels
             guid => _library.GetDerivedData(guid)?.AssetSummary,
             () => Refresh(ListTransitionKind.Filter));
 
+        // 搜索态那一排按钮里的宿主筛选。选中 = 条件生效；没有反向文案（旧版「显示过时 ↔ 显示全部」已删）。
+        // 注意「含选项」是**扩宽**而不是缩窄：默认列表不含选项 Mod，选中才把它们放出来。
+        public IReadOnlyList<ModListSearchFilter> SearchFilters { get; }
+
+        // 有没有任何筛选在生效。空状态靠它区分"确实没有内容"和"筛没了"。
+        private bool HasFilters => !string.IsNullOrWhiteSpace(_query) || _showOnlyOutdated || _showOptions || Category.IsActive;
+
         // 空状态按原因分三种：库为空 / 搜索无结果 / 全部已加入配置。
         // 逻辑层只给内容，外观由 EmptyStateView 决定。
         public EmptyStatePresentation? EmptyState
@@ -80,14 +87,14 @@ namespace HD2ModManager.ViewModels
             {
                 if (_list.VisibleCount > 0) return null;
 
-                // 搜索优先：用户刚输入过关键词时，先说"没匹配到"，
+                // 筛选优先：用户刚输入过关键词或点了标签时，先说"没匹配到"，
                 // 而不是说"所有 Mod 都已加入此配置"——后者答非所问。
-                if (!string.IsNullOrWhiteSpace(_query))
+                if (HasFilters)
                 {
                     return new EmptyStatePresentation(
                         "没有匹配的 Mod",
-                        "试试更短的关键词，或清除搜索回到全部 Mod。",
-                        "清除搜索",
+                        "试试去掉几枚标签或更短的关键词，或者清除全部筛选回到全部 Mod。",
+                        "清除全部筛选",
                         ClearSearchCommand,
                         EmptyStateIcon.Search);
                 }
@@ -110,7 +117,16 @@ namespace HD2ModManager.ViewModels
         }
 
         private RelayCommand? _clearSearchCommand;
-        public RelayCommand ClearSearchCommand => _clearSearchCommand ??= new RelayCommand(() => Query = string.Empty);
+        public RelayCommand ClearSearchCommand => _clearSearchCommand ??= new RelayCommand(ClearFilters);
+
+        // 空状态里的"清除全部筛选"必须真的清全部：只清文字的话，标签还在筛，用户会以为按钮坏了。
+        private void ClearFilters()
+        {
+            Query = string.Empty;
+            ShowOnlyOutdated = false;
+            ShowOptions = false;
+            Category.ClearSelection();
+        }
         private bool _showOnlyOutdated;
 
         private bool _showOptions;
@@ -120,11 +136,9 @@ namespace HD2ModManager.ViewModels
             set
             {
                 if (!SetField(ref _showOnlyOutdated, value)) return;
-                OnPropertyChanged(nameof(OutdatedFilterText));
                 Refresh(ListTransitionKind.Filter);
             }
         }
-        public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
         // 装饰包已不再支持：原来那个"显示装饰/隐藏装饰"筛选已删除（永远筛掉 0 条）。
         public bool ShowOptions
         {
@@ -132,11 +146,9 @@ namespace HD2ModManager.ViewModels
             set
             {
                 if (!SetField(ref _showOptions, value)) return;
-                OnPropertyChanged(nameof(OptionFilterText));
                 Refresh(ListTransitionKind.Filter);
             }
         }
-        public string OptionFilterText => ShowOptions ? "隐藏选项" : "显示选项";
 
         public RelayCommand RemoveModCommand { get; }
         public RelayCommand ToggleSelectionCommand { get; }
@@ -154,7 +166,13 @@ namespace HD2ModManager.ViewModels
         {
             Title = "模组库";
             _library = library;
-            _derivedState = derivedState;
+            SearchFilters = new[]
+            {
+                new ModListSearchFilter("outdated", "过时", () => ShowOnlyOutdated, value => ShowOnlyOutdated = value,
+                    "只看与当前游戏版本不兼容的 Mod；再点一次取消"),
+                new ModListSearchFilter("options", "含选项", () => ShowOptions, value => ShowOptions = value,
+                    "把作为「选项」的 Mod 也列出来（默认不列）；再点一次收起"),
+            };            _derivedState = derivedState;
             _profiles = profiles;
             _notifications = notifications;
             _selection = selection;

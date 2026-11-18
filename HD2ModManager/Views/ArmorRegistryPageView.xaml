@@ -6,20 +6,7 @@
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
         <ResourceDictionary>
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
-        <DataTemplate x:Key="AvailableArmorSearchActions">
-            <Button Style="{StaticResource AppHeaderTextButton}"
-                    Content="{Binding AvailableArmorUnitFilterText}"
-                    ToolTip="按当前活动配置中生效的 Unit 覆盖筛选；无法确认的护甲仅在“全部”中显示"
-                    Click="OnCycleAvailableArmorUnitFilterClick"/>
-        </DataTemplate>
-        <Style x:Key="AvailableArmorTabButton" TargetType="Button" BasedOn="{StaticResource AppQuietButton}">
-            <Setter Property="MinHeight" Value="28"/>
-            <Setter Property="Padding" Value="8,4"/>
-            <Setter Property="Margin" Value="1,0"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="BorderThickness" Value="1"/>
-        </Style>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         </ResourceDictionary>
     </UserControl.Resources>
     <Grid>
@@ -103,114 +90,26 @@
             </Grid>
 
             <Grid Grid.Column="1" Margin="6,0,0,0">
+                <!--
+                    可用护甲：套装 / 护甲 / 头盔 / 已映射 与 Unit 命中 / 未命中 都是搜索框里的标签，
+                    互不排斥；全部收起来就是"没有筛选"。已映射的行是同一批护甲的另一个视角：
+                    它的"注册"动作被逐行屏蔽（见 RuntimeArmorChoiceViewModel.HiddenActions），
+                    点击它跳到左侧对应的视觉来源。
+                -->
                 <local:ModListPanel x:Name="AvailableArmorList"
                                     ItemsSource="{Binding AvailableArmorsView}"
                                     HeaderTitle="可用护甲"
                                     HeaderSummary="{Binding AvailableSummary}"
                                     SearchText="{Binding AvailableSearchText, UpdateSourceTrigger=PropertyChanged}"
-                                    SearchActionsTemplate="{StaticResource AvailableArmorSearchActions}"
+                                    SearchFilters="{Binding SearchFilters}"
                                     EmptyMessage="{Binding AvailableEmptyMessage}"
                                     ArmorAssignToolTip="{Binding AvailableRowActionToolTip}"
                                     SelectionRequested="OnAvailableSelectionRequested"
                                     RowClicked="OnAvailableRowClicked"
-                                    RowActionInvoked="OnAvailableRowActionInvoked">
-                    <local:ModListPanel.Style>
-                        <Style TargetType="local:ModListPanel">
-                            <Setter Property="SelectionPolicy" Value="Multiple"/>
-                            <Setter Property="RowActions" Value="ArmorAssign"/>
-                            <Setter Property="RelationshipDragOperation" Value="ArmorRegistryAssign"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsMappedTabSelected}" Value="True">
-                                    <Setter Property="SelectionPolicy" Value="None"/>
-                                    <Setter Property="RowActions" Value="None"/>
-                                    <Setter Property="RelationshipDragOperation" Value="None"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </local:ModListPanel.Style>
-                    <local:ModListPanel.HeaderModes>
-                        <!-- 套装 / 护甲 / 头盔 / 已映射 选项卡是标题卡的一个状态（标题 / 搜索 / 选项卡），默认显示；
-                             点右上角的切换键可以换回标题看汇总。 -->
-                        <local:ModListHeaderMode Key="ArmorTabs"
-                                                 ToggleToolTip="显示或隐藏 套装 / 护甲 / 头盔 / 已映射 选项卡"
-                                                 ToggleIcon="{StaticResource RowIcon.Category}"
-                                                 IsRequested="True">
-                        <Border Background="{StaticResource SurfaceMuted}"
-                                BorderBrush="{StaticResource StrokeSubtle}"
-                                BorderThickness="1"
-                                CornerRadius="{StaticResource RadiusItem}"
-                                Padding="3"
-                                VerticalAlignment="Center">
-                            <UniformGrid Columns="4">
-                                <Button Content="{Binding SetTabHeader}"
-                                        Command="{Binding SelectAvailableTabCommand}"
-                                        CommandParameter="Set">
-                                    <Button.Style>
-                                        <Style TargetType="Button" BasedOn="{StaticResource AvailableArmorTabButton}">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding IsSetTabSelected}" Value="True">
-                                                    <Setter Property="Background" Value="{StaticResource SurfaceSelected}"/>
-                                                    <Setter Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
-                                                    <Setter Property="Foreground" Value="{StaticResource Accent}"/>
-                                                    <Setter Property="FontWeight" Value="SemiBold"/>
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </Button.Style>
-                                </Button>
-                                <Button Content="{Binding ArmorTabHeader}"
-                                        Command="{Binding SelectAvailableTabCommand}"
-                                        CommandParameter="Armor">
-                                    <Button.Style>
-                                        <Style TargetType="Button" BasedOn="{StaticResource AvailableArmorTabButton}">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding IsArmorTabSelected}" Value="True">
-                                                    <Setter Property="Background" Value="{StaticResource SurfaceSelected}"/>
-                                                    <Setter Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
-                                                    <Setter Property="Foreground" Value="{StaticResource Accent}"/>
-                                                    <Setter Property="FontWeight" Value="SemiBold"/>
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </Button.Style>
-                                </Button>
-                                <Button Content="{Binding HelmetTabHeader}"
-                                        Command="{Binding SelectAvailableTabCommand}"
-                                        CommandParameter="Helmet">
-                                    <Button.Style>
-                                        <Style TargetType="Button" BasedOn="{StaticResource AvailableArmorTabButton}">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding IsHelmetTabSelected}" Value="True">
-                                                    <Setter Property="Background" Value="{StaticResource SurfaceSelected}"/>
-                                                    <Setter Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
-                                                    <Setter Property="Foreground" Value="{StaticResource Accent}"/>
-                                                    <Setter Property="FontWeight" Value="SemiBold"/>
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </Button.Style>
-                                </Button>
-                                <Button Content="{Binding MappedTabHeader}"
-                                        Command="{Binding SelectAvailableTabCommand}"
-                                        CommandParameter="Mapped">
-                                    <Button.Style>
-                                        <Style TargetType="Button" BasedOn="{StaticResource AvailableArmorTabButton}">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding IsMappedTabSelected}" Value="True">
-                                                    <Setter Property="Background" Value="{StaticResource SurfaceSelected}"/>
-                                                    <Setter Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
-                                                    <Setter Property="Foreground" Value="{StaticResource Accent}"/>
-                                                    <Setter Property="FontWeight" Value="SemiBold"/>
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </Button.Style>
-                                </Button>
-                            </UniformGrid>
-                        </Border>
-                        </local:ModListHeaderMode>
-                    </local:ModListPanel.HeaderModes>
-                </local:ModListPanel>
+                                    RowActionInvoked="OnAvailableRowActionInvoked"
+                                    SelectionPolicy="Multiple"
+                                    RowActions="ArmorAssign"
+                                    RelationshipDragOperation="ArmorRegistryAssign"/>
                 <!-- 右列 = "解除管理"的拖放区；叠层本身由 DropHintOverlay 统一渲染。 -->
                 <lists:DropHintOverlay x:Name="AvailableDropOverlay" Panel.ZIndex="20"/>
             </Grid>

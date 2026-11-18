@@ -1,11 +1,10 @@
-using System.Text;
-
 namespace HD2ModManager.ViewModels
 {
-    public enum CategoryChipKind { All, BuiltIn, Pending, Custom, Add }
+    public enum CategoryChipKind { BuiltIn, Pending, Custom }
 
-    // 作用：列表顶部分类条上的一个芯片。Key 是分类键（见 CategoryKey），All 的 Key 为空串。
-    // 同一个芯片对象在多次 Rebuild 之间复用，只更新数字/选中态。
+    // 作用：一个可筛选的分类（键、名字、数量、选中态）。
+    // 同一个对象在多次 Rebuild 之间复用，只更新数字/选中态/名字——搜索框下面那排按钮
+    // 会按这个集合原地对齐，复用对象才能保住按钮上的焦点。
     public sealed class LibraryCategoryChip : BaseViewModel
     {
         private int _count;
@@ -24,11 +23,9 @@ namespace HD2ModManager.ViewModels
         public string Key { get; }
         public CategoryChipKind Kind { get; }
         public bool IsCustom => Kind == CategoryChipKind.Custom;
-        public bool IsAdd => Kind == CategoryChipKind.Add;
 
-        public int Count { get => _count; set { if (SetField(ref _count, value)) OnPropertyChanged(nameof(Text)); } }
+        public int Count { get => _count; set => SetField(ref _count, value); }
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
-        public string Label { get => _label; set { if (SetField(ref _label, value)) OnPropertyChanged(nameof(Text)); } }
-        public string Text => Kind == CategoryChipKind.Add ? "设置分类" : new StringBuilder(Label).Append(' ').Append(Count).ToString();
+        public string Label { get => _label; set => SetField(ref _label, value); }
     }
 }

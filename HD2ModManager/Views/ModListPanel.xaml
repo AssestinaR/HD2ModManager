@@ -3,6 +3,7 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views"
+             xmlns:search="clr-namespace:HD2ModManager.Controls.Search"
              xmlns:lists="clr-namespace:HD2ModManager.Controls.Lists"
              xmlns:empty="clr-namespace:HD2ModManager.Controls.EmptyState"
              PreviewKeyDown="OnPreviewKeyDown">
@@ -42,32 +43,16 @@
                            Style="{StaticResource ModListHeaderTitle}"
                            VerticalAlignment="Center"
                            MouseLeftButtonUp="OnHeaderTitleClick"/>
-                <TextBox x:Name="HeaderSearchBox"
-                         Grid.Column="0"
-                         Style="{StaticResource AppSearchBox}"
-                         Margin="0,0,8,0"
-                         VerticalAlignment="Center"
-                         Opacity="0"
-                         IsHitTestVisible="False"
-                         Focusable="False"
-                         Text="{Binding SearchText, ElementName=Root, UpdateSourceTrigger=PropertyChanged}"
-                         ToolTip="搜索名称或备注"/>
-                <!-- 引用方注册的额外状态（分类就是其中一个）挂在这一层上：
-                     Grid.RowSpan=2 让它同时占掉标题行和摘要行。面板负责互斥与交叉淡入淡出，
-                     见 ModListPanel.xaml.cs 的 ApplyHeaderContent。 -->
-                <Grid x:Name="HeaderModeLayer"
-                      Grid.RowSpan="2"
-                      Grid.Column="0"
-                      Panel.ZIndex="1"
-                      Margin="0,0,8,0"
-                      VerticalAlignment="Center"/>
+                <!-- 标签式搜索框：标签 + 无边框输入框同住 32 高的一格。 -->
+                <search:SearchTagBox x:Name="HeaderSearchBox"
+                                     Grid.Column="0"
+                                     Margin="0,0,8,0"
+                                     VerticalAlignment="Center"
+                                     Opacity="0"
+                                     IsHitTestVisible="False"
+                                     Focusable="False"
+                                     ToolTip="搜索名称或备注；输入后按空格可把这段文字变成标签"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <!-- 注册状态的切换按钮由代码生成（见 RebuildHeaderModeToggles）：
-                         注册项本身是 UIElement，放进 ItemsControl 会被当成容器使用，
-                         而它已经挂在 HeaderModeLayer 上了。搜索键永远排在最后。 -->
-                    <StackPanel x:Name="HeaderModeToggles"
-                                Orientation="Horizontal"
-                                VerticalAlignment="Center"/>
                     <Button Style="{StaticResource AppSearchToggleButton}"
                             ToolTip="显示或隐藏搜索"
                             Click="OnToggleSearchClick"/>
@@ -79,17 +64,54 @@
                            Style="{StaticResource AppSupportingText}"
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis"/>
-                <!-- 搜索动作区：Content 与 Visibility 都由 ApplyHeaderContent 管。
-                     不能在这里常驻可见——它的 Content 是宿主页面的 DataContext，
-                     在没有 SearchActionsTemplate 的宿主上会被隐式 DataTemplate 整页再渲染一遍，
-                     而页面里往往又有 ModListPanel，于是无限递归（StackOverflow）。
-                     所以只有"真的要用它"时才给它 Content 并参与布局。 -->
-                <ContentPresenter x:Name="HeaderSearchActions"
-                                  Grid.Row="1"
-                                  Grid.ColumnSpan="2"
-                                  ContentTemplate="{Binding SearchActionsTemplate, ElementName=Root}"
+                <!--
+                    搜索态的第二行：一排可横滚的筛选标签（过时 / 含选项 / 各分类 / 自建分类），
+                    最右端固定一枚「设置分类」。这一行同时是"标签从哪来"的入口：
+                    点按钮 = 加一枚标签，点标签 = 撤掉它。按钮与标签都由代码生成/绑定，见 SyncHeaderFilterButtons。
+                -->
+                <Grid x:Name="HeaderSearchFilterLayer"
+                      Grid.Row="1"
+                      Grid.ColumnSpan="2"
+                      Opacity="0"
+                      IsHitTestVisible="False">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ScrollViewer x:Name="HeaderFilterScroller"
+                                  Grid.Column="0"
+                                  HorizontalScrollBarVisibility="Hidden"
+                                  VerticalScrollBarVisibility="Disabled"
+                                  Focusable="False"
                                   VerticalAlignment="Center"
-                                  Visibility="Collapsed"/>
+                                  Margin="0,0,6,0"
+                                  PreviewMouseWheel="OnHeaderFilterWheel">
+                        <StackPanel x:Name="HeaderFilterButtons"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center"/>
+                    </ScrollViewer>
+                    <!-- 分类设置（新建 / 重命名 / 删除自建分类）。固定在最右端，不参与横滚。 -->
+                    <Button x:Name="HeaderCategorySettingsButton"
+                            Grid.Column="1"
+                            Style="{StaticResource AppTagChipButton}"
+                            ToolTip="设置分类"
+                            Visibility="Collapsed"
+                            Click="OnCategorySettingsClick">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <!-- 和行内动作同一个图标、同一种绘制方式：16px 画布、按几何自身坐标画。 -->
+                            <Path Width="16" Height="16"
+                                  Margin="0,0,5,0"
+                                  VerticalAlignment="Center"
+                                  Data="{StaticResource RowIcon.Category}"
+                                  StrokeThickness="1.4"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round"/>
+                            <TextBlock Text="设置分类" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </Grid>
             </Grid>
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
@@ -219,8 +241,6 @@
                                                 <Binding Path="RowActions" ElementName="Root"/>
                                                 <Binding/>
                                                 <Binding ElementName="Root"/>
-                                                <!-- 分类开关变化时重新生成行动作（"设置分类"按钮随之出现/消失）。 -->
-                                                <Binding Path="CategoryFilter.IsEnabled" ElementName="Root" FallbackValue="False"/>
                                             </MultiBinding>
                                         </ItemsControl.ItemsSource>
                                         <ItemsControl.ItemsPanel>

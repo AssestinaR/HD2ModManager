@@ -9,6 +9,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using HD2ModCore.Infrastructure;
 using HD2ModManager.Controls.EmptyState;
 using HD2ModManager.Controls.Lists;
 using HD2ModManager.Controls.Scrolling;
@@ -52,8 +53,11 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
     {
         InitializeComponent();
         _clearSearchCommand = new RelayCommand(ClearSearch);
+        HeaderSearchBox.Tags = _searchTags;
+        HeaderSearchBox.TagRemoveRequested += OnSearchTagRemoveRequested;
+        HeaderSearchBox.CommitRequested += (_, _) => CommitDraftAsTag();
+        HeaderSearchBox.DraftChanged += (_, _) => OnHeaderDraftChanged();
         UpdateEffectiveEmptyState();
-        HeaderModes.CollectionChanged += OnHeaderModesChanged;
         ApplyHeaderContent();
         _transitionController = new ModListTransitionController(
             this,
@@ -73,8 +77,11 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         {
             _transitionController.Attach(ItemsSource);
             ConfigureInternalSmoothScroll(UseInternalScroll);
-            // 回到一个带着查询的页面时，搜索框必须已经展开，否则过滤结果无法解释。
-            if (!string.IsNullOrWhiteSpace(SearchText)) ShowSearch(focus: false);
+            ApplyCategoryFilterPresence();
+            SyncHeaderFilterButtons();
+            RebuildSearchTags();
+            // 回到一个还带着筛选的页面时，搜索框必须已经展开，否则过滤结果无法解释。
+            if (_searchTags.Count != 0 || !string.IsNullOrWhiteSpace(SearchText)) ShowSearch(focus: false);
             SyncRelationshipDropRegistration();
         };
         Unloaded += (_, _) =>
@@ -130,16 +137,15 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
     public static readonly DependencyProperty ArmorReleaseToolTipProperty = DependencyProperty.Register(nameof(ArmorReleaseToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("解除视觉来源或映射"));
     public static readonly DependencyProperty ArmorOpenDetailsToolTipProperty = DependencyProperty.Register(nameof(ArmorOpenDetailsToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("查看映射目标"));
     public static readonly DependencyProperty AllowKeyboardRenameProperty = DependencyProperty.Register(nameof(AllowKeyboardRename), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
-    public static readonly DependencyProperty CategoryFilterProperty = DependencyProperty.Register(nameof(CategoryFilter), typeof(HD2ModManager.ViewModels.ModCategoryFilter), typeof(ModListPanel), new PropertyMetadata(null));
-    public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
+    public static readonly DependencyProperty CategoryFilterProperty = DependencyProperty.Register(nameof(CategoryFilter), typeof(HD2ModManager.ViewModels.ModCategoryFilter), typeof(ModListPanel), new PropertyMetadata(null, OnCategoryFilterChanged));
+    // 宿主贡献的可切换筛选（过时 / 含选项 / Unit 命中…）。面板只读它们的选中态、点一下调它们自己。
+    public static readonly DependencyProperty SearchFiltersProperty = DependencyProperty.Register(nameof(SearchFilters), typeof(IEnumerable), typeof(ModListPanel), new PropertyMetadata(null, OnSearchFiltersChanged));
     private static readonly DependencyPropertyKey HasPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasPresentedItemsProperty = HasPresentedItemsPropertyKey.DependencyProperty;
     private static readonly DependencyPropertyKey EffectiveEmptyStatePropertyKey = DependencyProperty.RegisterReadOnly(nameof(EffectiveEmptyState), typeof(object), typeof(ModListPanel), new PropertyMetadata(null));
     public static readonly DependencyProperty EffectiveEmptyStateProperty = EffectiveEmptyStatePropertyKey.DependencyProperty;
     private static readonly DependencyPropertyKey HasRowActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasRowActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasRowActionsProperty = HasRowActionsPropertyKey.DependencyProperty;
-    private static readonly DependencyPropertyKey HasSearchActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasSearchActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
-    public static readonly DependencyProperty HasSearchActionsProperty = HasSearchActionsPropertyKey.DependencyProperty;
 
     public IEnumerable? ItemsSource { get => (IEnumerable?)GetValue(ItemsSourceProperty); set => SetValue(ItemsSourceProperty, value); }
     public IEnumerable PresentedItems => _presentedItems;
@@ -175,9 +181,9 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
     public string ArmorReleaseToolTip { get => (string)GetValue(ArmorReleaseToolTipProperty); set => SetValue(ArmorReleaseToolTipProperty, value); }
     public string ArmorOpenDetailsToolTip { get => (string)GetValue(ArmorOpenDetailsToolTipProperty); set => SetValue(ArmorOpenDetailsToolTipProperty, value); }
     public bool AllowKeyboardRename { get => (bool)GetValue(AllowKeyboardRenameProperty); set => SetValue(AllowKeyboardRenameProperty, value); }
-    // 宿主提供自动分类筛选时，面板在卡片顶部固定显示芯片条，并在搜索按钮旁提供开关图标。
-    public HD2ModManager.ViewModels.ModCategoryFilter? CategoryFilter { get => (HD2ModManager.ViewModels.ModCategoryFilter?)GetValue(CategoryFilterProperty); set => SetValue(CategoryFilterProperty, value); }
-    public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
+    // 宿主提供分类筛选时，面板在搜索态的标签条里显示各分类，并在最右端提供「设置分类」。
+    public ModCategoryFilter? CategoryFilter { get => (ModCategoryFilter?)GetValue(CategoryFilterProperty); set => SetValue(CategoryFilterProperty, value); }
+    public IEnumerable? SearchFilters { get => (IEnumerable?)GetValue(SearchFiltersProperty); set => SetValue(SearchFiltersProperty, value); }
 
     // 同一动作在不同列表里意思不同（"解除视觉对象" vs "解除映射目标"），
     // 所以这四个文案由宿主覆盖；其余动作直接用 catalog 的默认文案。
@@ -189,7 +195,6 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         _ => null,
     };
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);
-    public bool HasSearchActions => (bool)GetValue(HasSearchActionsProperty);
     public bool HasPresentedItems => (bool)GetValue(HasPresentedItemsProperty);
     // 最终真正渲染的空状态：宿主给的优先，否则查询非空时由面板派生。
     public object? EffectiveEmptyState => GetValue(EffectiveEmptyStateProperty);
@@ -240,177 +245,353 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         ShowSearchAndFocus();
     }
 
-    // ---- 标题卡的状态：标题 / 搜索 / 引用方注册的额外状态 ----
+    // ---- 标题卡的状态：只有"标题"和"搜索" ----
     //
-    // 面板只内置"标题"和"搜索"。除此之外想占用这块位置的人（模组库页与配置页的分类芯片条）
-    // 往 HeaderModes 里加一项，面板负责互斥、交叉淡入淡出，并按注册项的图标与提示生成切换按钮。
-    // 面板不再知道"分类"是什么，所以第四个、第五个状态不需要动面板。
+    // 第三态（分类芯片条）已经删掉：分类、过时、含选项这些统统是"筛选条件"，
+    // 它们现在的唯一表现形式是搜索框里的标签。于是这里只剩一个布尔量和一条互斥规则，
+    // 不再有"谁来占这块位置"的仲裁，也不再需要注册制。
     //
-    // 互斥只由一个状态决定：_searchOpen 表示"搜索框要不要占这个位置"，其余由注册项的
-    // IsRequested && IsAvailable 决定。所有内容常驻视觉树，只改 Opacity 和命中测试——
-    // 不用"动画完成回调里改 Visibility"：快速来回切换时，上一轮 fade-out 的完成回调会把
-    // 刚显示出来的元素又藏起来（标题消失、列表还在标题状态），这是这套动画最容易出的错。
+    // 所有内容常驻视觉树，只改 Opacity 和命中测试——不用"动画完成回调里改 Visibility"：
+    // 快速来回切换时，上一轮 fade-out 的完成回调会把刚显示出来的元素又藏起来
+    // （标题消失、列表还在标题状态），这是这套动画最容易出的错。
 
     private const int HeaderFadeOutMilliseconds = 140;
     private const int HeaderFadeInMilliseconds = 160;
 
     private bool _searchOpen;
 
+    // 搜索框里的标签：分类（来自 CategoryFilter.SelectedKeys）、宿主筛选（SearchFilters）、
+    // 以及用户自己敲出来的自由词。三者都只在这里汇总成一张只读投影，状态本身各有各的家。
+    private readonly ObservableCollection<ModListSearchTag> _searchTags = new();
+    private readonly List<string> _freeTextTags = new();
+    private string _draft = string.Empty;
+    // 面板自己往 SearchText 里写有效查询时置位，避免把"我自己写的"当成"宿主改了查询"。
+    private bool _writingSearchText;
+
+    // ---- 搜索框里的标签 ----
+
     /// <summary>
-    /// 引用方注册的标题卡状态。按注册顺序取第一个"想显示且能显示"的；
-    /// 程序化切换见 <see cref="SetHeaderMode"/>。
+    /// 搜索框当前展示的标签（只读投影：分类 + 宿主筛选 + 自由词）。面板负责重建它，
+    /// 外部只应该读——真正的状态在 CategoryFilter、宿主 VM 和 _freeTextTags 里。
     /// </summary>
-    public ObservableCollection<ModListHeaderMode> HeaderModes { get; } = new();
+    public ObservableCollection<ModListSearchTag> SearchTags => _searchTags;
 
-    private void OnHeaderModesChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private IEnumerable<ModListSearchFilter> Filters()
+        => SearchFilters?.OfType<ModListSearchFilter>() ?? Enumerable.Empty<ModListSearchFilter>();
+
+    /// <summary>把三份状态重建成一张标签表。条目很少（分类十来个），重建比逐项同步更不容易漂。</summary>
+    private void RebuildSearchTags()
     {
-        foreach (var mode in e.OldItems?.OfType<ModListHeaderMode>() ?? Enumerable.Empty<ModListHeaderMode>())
+        _searchTags.Clear();
+
+        foreach (var filter in Filters())
         {
-            mode.StateChanged -= OnHeaderModeStateChanged;
-            HeaderModeLayer.Children.Remove(mode);
+            if (!filter.IsSelected) continue;
+            var captured = filter;
+            _searchTags.Add(new ModListSearchTag("f:" + filter.Key, filter.Label, ModListSearchTagKind.Filter,
+                () => ToggleFilter(captured)));
         }
 
-        foreach (var mode in e.NewItems?.OfType<ModListHeaderMode>() ?? Enumerable.Empty<ModListHeaderMode>())
+        if (CategoryFilter is not null)
         {
-            mode.StateChanged += OnHeaderModeStateChanged;
-            mode.Focusable = false;
-            // 入场先透明：否则注册的那一刻会在标题上方闪一下。
-            mode.Opacity = 0;
-            mode.IsHitTestVisible = false;
-            HeaderModeLayer.Children.Add(mode);
-        }
-
-        RebuildHeaderModeToggles();
-        ApplyHeaderContent();
-    }
-
-    private void OnHeaderModeStateChanged(object? sender, EventArgs e)
-    {
-        UpdateHeaderModeToggles();
-        ApplyHeaderContent();
-    }
-
-    // 切换按钮用代码生成：注册项本身是 UIElement，作为 ItemsControl 的项会被当成容器使用，
-    // 而它已经挂在 HeaderModeLayer 上了（一个元素只能有一个父级）。
-    private void RebuildHeaderModeToggles()
-    {
-        HeaderModeToggles.Children.Clear();
-        foreach (var mode in HeaderModes)
-        {
-            var icon = new System.Windows.Shapes.Path
+            foreach (var key in CategoryFilter.SelectedKeys)
             {
-                Width = 16,
-                Height = 16,
-                StrokeThickness = 1.4,
-                StrokeStartLineCap = PenLineCap.Round,
-                StrokeEndLineCap = PenLineCap.Round,
-                StrokeLineJoin = PenLineJoin.Round,
-            };
-            // 图标与提示用绑定而不是在这里取值：XAML 里注册项是先加进集合、后设属性的
-            // （FrameworkElement 自上而下初始化），这一刻 ToggleIcon 还是 null，按钮就成了空圆。
-            icon.SetBinding(System.Windows.Shapes.Path.DataProperty,
-                new System.Windows.Data.Binding(nameof(ModListHeaderMode.ToggleIcon)) { Source = mode });
-            var button = new Button
-            {
-                Style = TryFindResource("AppCategoryToggleButton") as Style,
-                Tag = mode,
-                Margin = new Thickness(0, 0, 2, 0),
-                Content = icon,
-            };
-            button.SetBinding(ToolTipProperty,
-                new System.Windows.Data.Binding(nameof(ModListHeaderMode.ToggleToolTip)) { Source = mode });
-            button.Click += OnHeaderModeToggleClick;
-            HeaderModeToggles.Children.Add(button);
+                var captured = key;
+                _searchTags.Add(new ModListSearchTag("c:" + key, CategoryFilter.LabelOf(key), ModListSearchTagKind.Category,
+                    () => ToggleCategory(captured)));
+            }
         }
 
-        UpdateHeaderModeToggles();
-    }
-
-    private void UpdateHeaderModeToggles()
-    {
-        for (var index = 0; index < HeaderModeToggles.Children.Count && index < HeaderModes.Count; index++)
+        foreach (var word in _freeTextTags)
         {
-            if (HeaderModeToggles.Children[index] is not Button { Content: System.Windows.Shapes.Shape icon } button) continue;
-            // 已请求时用强调色，和搜索键的"开着"观感一致。
-            icon.Stroke = (button.Tag as ModListHeaderMode)?.IsRequested == true
-                ? TryFindResource("Accent") as Brush
-                : TryFindResource("TextSecondary") as Brush;
+            var captured = word;
+            _searchTags.Add(new ModListSearchTag("t:" + word, word, ModListSearchTagKind.Text,
+                () => RemoveFreeTextTag(captured)));
+        }
+
+        UpdateEffectiveEmptyState();
+    }
+
+    private void ToggleFilter(ModListSearchFilter filter)
+    {
+        filter.Toggle();
+        filter.RefreshSelection();
+        SyncHeaderFilterButtons();
+        RebuildSearchTags();
+    }
+
+    private void ToggleCategory(string key)
+    {
+        if (CategoryFilter is null) return;
+        CategoryFilter.Toggle(key);
+        SyncHeaderFilterButtons();
+        RebuildSearchTags();
+    }
+
+    private void RemoveFreeTextTag(string word)
+    {
+        _freeTextTags.RemoveAll(item => string.Equals(item, word, StringComparison.OrdinalIgnoreCase));
+        RebuildSearchTags();
+        RecomputeSearchText();
+    }
+
+    private void OnSearchTagRemoveRequested(object? sender, ModListSearchTag tag)
+    {
+        if (tag.Remove is { } remove)
+        {
+            remove();
+            return;
+        }
+
+        RemoveFreeTextTag(tag.Label);
+    }
+
+    // 草稿变成标签：按空白切分，去重后追加到自由标签，清空输入框。
+    private void CommitDraftAsTag()
+    {
+        var words = ModSearchQuery.Normalize(new[] { _draft });
+        if (words.Count == 0) return;
+
+        foreach (var word in words)
+        {
+            if (!_freeTextTags.Contains(word, StringComparer.OrdinalIgnoreCase)) _freeTextTags.Add(word);
+        }
+
+        SetDraftText(string.Empty);
+        RebuildSearchTags();
+        RecomputeSearchText();
+    }
+
+    private void OnHeaderDraftChanged()
+    {
+        var text = HeaderSearchBox?.Draft ?? string.Empty;
+        if (string.Equals(_draft, text, StringComparison.Ordinal)) return;
+        _draft = text;
+        RecomputeSearchText();
+        UpdateEffectiveEmptyState();
+    }
+
+    private void SetDraftText(string value)
+    {
+        _draft = value ?? string.Empty;
+        if (HeaderSearchBox is null) return;
+        if (!string.Equals(HeaderSearchBox.Draft, _draft, StringComparison.Ordinal)) HeaderSearchBox.Draft = _draft;
+    }
+
+    // 有效查询是**算出来的**：自由标签 + 草稿。方向只有一个（状态 → SearchText），
+    // 绝不把 SearchText 再解析回标签，否则光标会跳、清空会被旧绑定写回来。
+    private void RecomputeSearchText()
+    {
+        var composed = ModSearchQuery.Compose(_freeTextTags, _draft);
+        if (string.Equals(SearchText, composed, StringComparison.Ordinal)) return;
+
+        _writingSearchText = true;
+        try { SearchText = composed; }
+        finally { _writingSearchText = false; }
+    }
+
+    // 宿主把 SearchText 换掉了（页面重建后带着查询回来、空状态里的"清除全部筛选"）：
+    // 当作"只有草稿"处理——标签是面板自己的状态，外部没有能力只改其中一枚。
+    private void AdoptExternalSearchText(string? value)
+    {
+        var text = value ?? string.Empty;
+        if (_freeTextTags.Count != 0) _freeTextTags.Clear();
+        SetDraftText(text);
+        RebuildSearchTags();
+    }
+
+    /// <summary>把草稿、自由标签、分类选择、宿主筛选全部复位。收起搜索框和"清除全部筛选"共用它。</summary>
+    private void ClearAllFilters()
+    {
+        _freeTextTags.Clear();
+        SetDraftText(string.Empty);
+
+        foreach (var filter in Filters().ToArray()) filter.Clear();
+        CategoryFilter?.ClearSelection();
+
+        SyncHeaderFilterButtons();
+        RebuildSearchTags();
+        RecomputeSearchText();
+    }
+
+    // ---- 搜索态那一行按钮 ----
+
+    // 按钮按"键"复用：只改文字与颜色，不重建。重建会把键盘焦点弄丢，而用户可能正用 Tab 在点它。
+    private void SyncHeaderFilterButtons()
+    {
+        if (HeaderFilterButtons is null) return;
+
+        var desired = new List<(string Key, string Label, string? Tip, bool Selected)>();
+        foreach (var filter in Filters())
+            desired.Add(("f:" + filter.Key, filter.Label, filter.ToolTip, filter.IsSelected));
+
+        if (CategoryFilter is not null)
+        {
+            foreach (var chip in CategoryFilter.Chips)
+                desired.Add(("c:" + chip.Key, chip.Label, $"{chip.Label} · {chip.Count} 个 Mod", chip.IsSelected));
+        }
+
+        var existing = HeaderFilterButtons.Children.OfType<Button>()
+            .Where(button => desired.Any(spec => string.Equals(button.Tag as string, spec.Key, StringComparison.Ordinal)))
+            .ToDictionary(button => (string)button.Tag!, StringComparer.Ordinal);
+        for (var i = HeaderFilterButtons.Children.Count - 1; i >= 0; i--)
+        {
+            if (HeaderFilterButtons.Children[i] is Button button
+                && !desired.Any(spec => string.Equals(button.Tag as string, spec.Key, StringComparison.Ordinal)))
+            {
+                HeaderFilterButtons.Children.RemoveAt(i);
+            }
+        }
+
+        var accent = TryFindResource("Accent") as Brush;
+        var secondary = TryFindResource("TextSecondary") as Brush;
+        for (var i = 0; i < desired.Count; i++)
+        {
+            var spec = desired[i];
+            if (!existing.TryGetValue(spec.Key, out var button))
+            {
+                button = new Button
+                {
+                    Style = TryFindResource("AppHeaderTextButton") as Style,
+                    Tag = spec.Key,
+                    Margin = new Thickness(0, 0, 2, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                button.Click += OnHeaderFilterButtonClick;
+                HeaderFilterButtons.Children.Insert(Math.Min(i, HeaderFilterButtons.Children.Count), button);
+            }
+
+            var currentIndex = HeaderFilterButtons.Children.IndexOf(button);
+            if (currentIndex != i) HeaderFilterButtons.Children.RemoveAt(currentIndex);
+            if (currentIndex != i) HeaderFilterButtons.Children.Insert(Math.Min(i, HeaderFilterButtons.Children.Count), button);
+
+            button.Content = spec.Label;
+            button.ToolTip = spec.Tip;
+            button.Foreground = spec.Selected ? accent : secondary;
+            button.FontWeight = spec.Selected ? FontWeights.SemiBold : FontWeights.Normal;
         }
     }
 
-    private void OnHeaderModeToggleClick(object sender, RoutedEventArgs e)
+    private void OnHeaderFilterButtonClick(object sender, RoutedEventArgs e)
     {
-        if (sender is not FrameworkElement { Tag: ModListHeaderMode mode }) return;
+        if (sender is not FrameworkElement { Tag: string key }) return;
 
-        // 判据是"它此刻是不是正占着这块位置"，不是 IsRequested：
-        // 搜索框占位时分类的 IsRequested 仍是 true 但看不见，这时候点它应该是"抢回来"，
-        // 而不是把分类整个关掉（那样列表会莫名其妙少一批东西，界面上却看不出发生了什么）。
-        var visible = ReferenceEquals(ActiveHeaderMode, mode);
-        var request = !visible;
-        if (request) _searchOpen = false;
-        mode.IsRequested = request;
-        ApplyHeaderContent();
+        if (key.StartsWith("f:", StringComparison.Ordinal))
+        {
+            var filter = Filters().FirstOrDefault(item => string.Equals(item.Key, key[2..], StringComparison.Ordinal));
+            if (filter is not null) ToggleFilter(filter);
+            return;
+        }
+
+        if (key.StartsWith("c:", StringComparison.Ordinal)) ToggleCategory(key[2..]);
     }
 
-    /// <summary>程序化切换：只请求 key 对应的状态（null = 交还给标题）。</summary>
-    internal void SetHeaderMode(string? key)
+    private void OnHeaderFilterWheel(object sender, MouseWheelEventArgs e)
     {
-        if (key is not null) _searchOpen = false;
-        foreach (var mode in HeaderModes)
-            mode.IsRequested = key is not null && string.Equals(mode.Key, key, StringComparison.Ordinal);
-        ApplyHeaderContent();
+        if (e.Delta == 0 || HeaderFilterScroller.ScrollableWidth <= 0) return;
+        HeaderFilterScroller.ScrollToHorizontalOffset(HeaderFilterScroller.HorizontalOffset - e.Delta);
+        e.Handled = true;
     }
 
-    // 当前占位者：搜索优先（它开着就是用户在打字），否则第一个可用状态，再否则标题。
-    private ModListHeaderMode? ActiveHeaderMode
-        => _searchOpen ? null : HeaderModes.FirstOrDefault(mode => mode.IsActive);
+    private void OnCategorySettingsClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement anchor || CategoryFilter is not { } filter) return;
+
+        // 卡片宽 320 + 两侧 14 的阴影边距；右对齐到按钮，避免从卡片右缘溢出。
+        // 开合由 CategoryPopup 统一管：再点这颗按钮就是收起。
+        CategoryPopup.Toggle(anchor, PlacementMode.Bottom, anchor.ActualWidth - 334, -6,
+            () => new CategoryManageCard(filter, CategoryPopup.Close));
+    }
+
+    private static void OnCategoryFilterChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
+    {
+        if (target is not ModListPanel panel) return;
+
+        if (args.OldValue is ModCategoryFilter previous)
+        {
+            previous.SelectionChanged -= panel.OnCategorySelectionChanged;
+            previous.Chips.CollectionChanged -= panel.OnCategoryChipsChanged;
+            foreach (var chip in previous.Chips) chip.PropertyChanged -= panel.OnCategoryChipPropertyChanged;
+        }
+
+        if (args.NewValue is ModCategoryFilter current)
+        {
+            current.SelectionChanged += panel.OnCategorySelectionChanged;
+            current.Chips.CollectionChanged += panel.OnCategoryChipsChanged;
+            foreach (var chip in current.Chips) chip.PropertyChanged += panel.OnCategoryChipPropertyChanged;
+        }
+
+        panel.ApplyCategoryFilterPresence();
+    }
+
+    private void OnCategorySelectionChanged()
+    {
+        SyncHeaderFilterButtons();
+        RebuildSearchTags();
+    }
+
+    private void OnCategoryChipsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        foreach (var chip in e.OldItems?.OfType<LibraryCategoryChip>() ?? Enumerable.Empty<LibraryCategoryChip>())
+            chip.PropertyChanged -= OnCategoryChipPropertyChanged;
+        foreach (var chip in e.NewItems?.OfType<LibraryCategoryChip>() ?? Enumerable.Empty<LibraryCategoryChip>())
+            chip.PropertyChanged += OnCategoryChipPropertyChanged;
+
+        SyncHeaderFilterButtons();
+        RebuildSearchTags();
+    }
+
+    // 只关心分类改名（胶囊上写的就是这个名字）与外部直接改选中态；数量变化不影响按钮文案。
+    private void OnCategoryChipPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is not (nameof(LibraryCategoryChip.Label) or nameof(LibraryCategoryChip.IsSelected))) return;
+        if (e.PropertyName == nameof(LibraryCategoryChip.Label)) RebuildSearchTags();
+        else SyncHeaderFilterButtons();
+    }
+
+    private void ApplyCategoryFilterPresence()
+    {
+        if (HeaderCategorySettingsButton is null) return;
+        HeaderCategorySettingsButton.Visibility = CategoryFilter is null ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private static void OnSearchFiltersChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
+    {
+        if (target is not ModListPanel panel) return;
+
+        if (args.OldValue is INotifyCollectionChanged previous) previous.CollectionChanged -= panel.OnSearchFiltersCollectionChanged;
+        if (args.NewValue is INotifyCollectionChanged current) current.CollectionChanged += panel.OnSearchFiltersCollectionChanged;
+
+        panel.SyncHeaderFilterButtons();
+        panel.RebuildSearchTags();
+    }
+
+    private void OnSearchFiltersCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        SyncHeaderFilterButtons();
+        RebuildSearchTags();
+    }
 
     private void ApplyHeaderContent(bool focusSearch = false)
     {
-        if (HeaderModeLayer is null) return;   // 还没 InitializeComponent
+        if (HeaderSearchFilterLayer is null) return;   // 还没 InitializeComponent
 
-        var mode = ActiveHeaderMode;
-        var title = !_searchOpen && mode is null;
+        var title = !_searchOpen;
 
         CrossFade(HeaderTitleElement, title);
         CrossFade(HeaderSummaryElement, title);
         CrossFade(HeaderSearchBox, _searchOpen);
-        ApplyHeaderSearchActions(_searchOpen);
-
-        foreach (var item in HeaderModes)
-        {
-            var active = ReferenceEquals(item, mode);
-            CrossFade(item, active);
-            // 淡出中的层不能继续吃点击：透明度 0 的元素照样命中测试。
-            item.IsHitTestVisible = active;
-        }
+        CrossFade(HeaderSearchFilterLayer, _searchOpen);
 
         HeaderTitleElement.IsHitTestVisible = title;
-        // 摘要文字在 XAML 里排在状态层之后（盖在上面），淡出后仍会挡住分类第二行里字形所在的像素。
+        // 摘要文字在 XAML 里排在筛选层之后（盖在上面），淡出后仍会挡住第二行里字形所在的像素。
         HeaderSummaryElement.IsHitTestVisible = title;
         HeaderSearchBox.IsHitTestVisible = _searchOpen;
-        // 不可见时不让 Tab 键走进搜索框。
-        HeaderSearchBox.Focusable = _searchOpen;
+        HeaderSearchFilterLayer.IsHitTestVisible = _searchOpen;
+        // 不可见时不让 Tab 键走进输入框。
+        if (HeaderSearchBox is not null) HeaderSearchBox.EditorTabStop = _searchOpen;
 
-        if (_searchOpen && focusSearch)
-        {
-            HeaderSearchBox.Focus();
-            HeaderSearchBox.SelectAll();
-        }
-    }
-
-    // 搜索动作区必须"不显示就彻底不参与布局"。
-    //
-    // 它的 Content 是宿主页面的 DataContext，而 MainWindow 为每个页面 VM 都注册了隐式
-    // DataTemplate（VM → View）。宿主没给 SearchActionsTemplate 时，这个 ContentPresenter
-    // 会退化成"用隐式模板渲染整个页面"，而页面里往往又嵌着 ModListPanel——于是
-    // ModListPanel → 页面 → ModListPanel 无限套下去，直接 StackOverflow。
-    // 所以：不用它的时候既不给 Content，也让 Visibility 收起。
-    private void ApplyHeaderSearchActions(bool searchOpen)
-    {
-        var show = searchOpen && HasSearchActions;
-        HeaderSearchActions.Content = show ? DataContext : null;
-        HeaderSearchActions.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (_searchOpen && focusSearch) HeaderSearchBox?.SelectAllText();
     }
 
     // 交叉淡入淡出：只动 Opacity，终值立刻写进本地值（FillBehavior.Stop 让动画只负责观感），
@@ -436,6 +617,8 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
     private static void OnSearchTextChanged(DependencyObject sender, DependencyPropertyChangedEventArgs e)
     {
         if (sender is not ModListPanel panel) return;
+        // 面板自己写有效查询时不要再解析回来，否则标签会被自己写出去的文字覆盖。
+        if (!panel._writingSearchText) panel.AdoptExternalSearchText(e.NewValue as string);
         // 只负责"从收起变为展开"。清空查询时不收起搜索框——用户可能正在退格重输，
         // 把输入框从脚下撤掉是最糟的反馈。
         if (panel.IsLoaded && !panel._searchOpen && !string.IsNullOrWhiteSpace(e.NewValue as string))
@@ -468,17 +651,18 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
 
     // 面板自己就知道"有查询、但投影为空"，所以这件事不该由每个宿主 VM 各写一遍
     // （库页写了三分支、护甲页写了两个属性）。宿主给了 EmptyState 就用宿主的——
-    // 页面文案永远比通用文案具体；没给而查询非空，就派生一个通用"没有匹配"态，
-    // 并且由面板自己负责清除查询，不需要宿主提供命令。
+    // 页面文案永远比通用文案具体；没给而查询/标签非空，就派生一个通用"没有匹配"态，
+    // 并且由面板自己负责清除，不需要宿主提供命令。
     private void UpdateEffectiveEmptyState()
     {
         var state = EmptyState as EmptyStatePresentation;
-        if (state is null && !string.IsNullOrWhiteSpace(SearchText))
+        var hasFilter = !string.IsNullOrWhiteSpace(SearchText) || _searchTags.Count != 0;
+        if (state is null && hasFilter)
         {
             state = new EmptyStatePresentation(
                 "没有匹配的条目",
-                "试试更短的关键词，或清除搜索回到全部内容。",
-                "清除搜索",
+                "试试去掉几枚标签或更短的词，或者清除全部筛选回到全部内容。",
+                "清除全部筛选",
                 _clearSearchCommand,
                 EmptyStateIcon.Search);
         }
@@ -488,7 +672,7 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
 
     private void ClearSearch()
     {
-        SearchText = string.Empty;
+        ClearAllFilters();
         ShowSearchAndFocus();
     }
 
@@ -500,8 +684,7 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         if (_searchOpen)
         {
             if (!focus) return;
-            HeaderSearchBox.Focus();
-            HeaderSearchBox.SelectAll();
+            HeaderSearchBox?.SelectAllText();
             return;
         }
 
@@ -511,16 +694,15 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
 
     private void HideSearch()
     {
-        // 收起搜索框必须同时放弃过滤。否则列表还停在"筛过的结果"上，而解释这个
+        // 收起搜索框必须同时放弃**全部**过滤。否则列表还停在"筛过的结果"上，而解释这个
         // 结果的控件已经不见了——用户会以为自己的 Mod 丢了，而且没有任何线索。
-        // 这条和 OnSearchTextChanged 里的自动展开合起来维持一个不变量：
-        // 查询非空 ⟺ 搜索框可见。
-        if (!string.IsNullOrWhiteSpace(SearchText)) SearchText = string.Empty;
+        //
+        // 旧实现只清了文字，过时 / 显示选项会留在生效状态（按钮却已经消失）；这次一并修掉：
+        // 不变量现在是"有任何筛选 ⟺ 搜索框可见"。
+        ClearAllFilters();
         if (!_searchOpen) return;
 
         _searchOpen = false;
-        // 收起后回到"分类 / 标题"中的一个，而不是无条件回到标题：
-        // 分类还开着的话，用户刚才看的应该是分类。
         ApplyHeaderContent();
     }
 
@@ -687,14 +869,14 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         e.Handled = true;
     }
 
-    // 没有分类筛选（宿主没传，或用户关掉了分类）时，"设置分类"动作不出现。
+    // 没有分类筛选（宿主没传）时，"设置分类"动作不出现。
     public ModListRowAction UnavailableActions
-        => CategoryFilter is { IsEnabled: true } ? ModListRowAction.None : ModListRowAction.Category;
+        => CategoryFilter is null ? ModListRowAction.Category : ModListRowAction.None;
 
     // 点行上的"设置分类"：目标是被选中的所有行（点的这行在选中里时），否则只是点的这一行。
     private void ShowCategoryMenu(FrameworkElement anchor, object rowItem)
     {
-        if (CategoryFilter is not { IsEnabled: true } filter) return;
+        if (CategoryFilter is not { } filter) return;
         var guids = (rowItem is IModListSelectable { IsSelected: true }
                 ? GetSelectedItems()
                 : new[] { rowItem })
@@ -1485,9 +1667,6 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
 
     private static void OnRowActionsChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
         => target.SetValue(HasRowActionsPropertyKey, (ModListRowAction)args.NewValue != ModListRowAction.None);
-
-    private static void OnSearchActionsTemplateChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
-        => target.SetValue(HasSearchActionsPropertyKey, args.NewValue is DataTemplate);
 
     private sealed class SelectionIndicatorSubscription
     {

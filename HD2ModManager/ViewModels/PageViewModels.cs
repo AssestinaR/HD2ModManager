@@ -685,13 +685,42 @@ namespace HD2ModManager.ViewModels
         public string CurrentProfileTitle => _profiles.SelectedKey ?? "未选择配置";
         public string ItemCountText => $"显示 {_list.VisibleCount} / {_profiles.SelectedProfile?.Entries.Count ?? 0} 个 Mod";
         public string HeaderSummary => $"{ItemCountText} · {ActiveProfileText} · {SelectedProfileState}";
-        // 配置页的空状态：不提供命令（切页由壳层管），只给一句能照做的说明。
-        public EmptyStatePresentation? EmptyState => _list.VisibleCount > 0
-            ? null
-            : new EmptyStatePresentation(
-                "这个配置里还没有 Mod",
-                "把左侧模组库里的 Mod 拖进来；或在库页选中它们，点底栏的「加入配置」。",
-                Icon: EmptyStateIcon.Inbox);
+        // 搜索态那一排按钮里的宿主筛选（配置页只有「过时」）。
+        public IReadOnlyList<ModListSearchFilter> SearchFilters { get; }
+        // 有没有任何筛选在生效：决定空状态说"配置是空的"还是"筛没了"。
+        private bool HasFilters => !string.IsNullOrWhiteSpace(_query) || _showOnlyOutdated || Category.IsActive;
+        // 配置页的空状态：没有筛选时不提供命令（切页由壳层管），有筛选时给一个真能清干净的。
+        public EmptyStatePresentation? EmptyState
+        {
+            get
+            {
+                if (_list.VisibleCount > 0) return null;
+                if (HasFilters)
+                {
+                    return new EmptyStatePresentation(
+                        "没有匹配的 Mod",
+                        "试试去掉几枚标签或更短的关键词，或者清除全部筛选回到这个配置的全部内容。",
+                        "清除全部筛选",
+                        ClearFiltersCommand,
+                        EmptyStateIcon.Search);
+                }
+
+                return new EmptyStatePresentation(
+                    "这个配置里还没有 Mod",
+                    "把左侧模组库里的 Mod 拖进来；或在库页选中它们，点底栏的「加入配置」。",
+                    Icon: EmptyStateIcon.Inbox);
+            }
+        }
+
+        private RelayCommand? _clearFiltersCommand;
+        public RelayCommand ClearFiltersCommand => _clearFiltersCommand ??= new RelayCommand(ClearFilters);
+
+        private void ClearFilters()
+        {
+            Query = string.Empty;
+            ShowOnlyOutdated = false;
+            Category.ClearSelection();
+        }
         private bool _showOnlyOutdated;
         public bool ShowOnlyOutdated
         {
@@ -699,12 +728,10 @@ namespace HD2ModManager.ViewModels
             set
             {
                 if (!SetField(ref _showOnlyOutdated, value)) return;
-                OnPropertyChanged(nameof(OutdatedFilterText));
                 OnPropertyChanged(nameof(CanReorder));
                 Refresh(ListTransitionKind.Filter);
             }
         }
-        public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
         public bool CanReorder => string.IsNullOrWhiteSpace(Query) && !ShowOnlyOutdated && !Category.IsActive;
         private bool _canAcceptLibraryDrop;
         public bool CanAcceptLibraryDrop => _canAcceptLibraryDrop;
@@ -754,6 +781,11 @@ namespace HD2ModManager.ViewModels
             _derivedState = derivedState;
             _selection = selection;
             _bottomBar = bottomBar;
+            SearchFilters = new[]
+            {
+                new ModListSearchFilter("outdated", "过时", () => ShowOnlyOutdated, value => ShowOnlyOutdated = value,
+                    "只看与当前游戏版本不兼容的 Mod；再点一次取消"),
+            };
             _list = new ModListStateController<ProfileModListState, ProfileListItemViewModel>(
                 state => state.Guid,
                 state => state.PresentationVersion,

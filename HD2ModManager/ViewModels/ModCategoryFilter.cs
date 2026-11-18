@@ -140,87 +140,77 @@ namespace HD2ModManager.ViewModels
         private static void Save() => SettingsService.SetCategoryUserData(_custom!, _overrides!);
     }
 
-    // 作用：记住"上次把分类打开了没有"，作为新页面实例的默认值。
-    // 注意：这**不是**当前的开关状态——模组库页和配置页各有一份自己的 ModCategoryFilter，
-    // 各自独立开关（以前把状态放在这里，点一边会把两边的标题卡一起切掉）。
-    internal static class CategoryFilterPreference
-    {
-        private static bool? _enabled;
-        public static event Action? Changed;
-
-        public static bool IsEnabled => _enabled ??= SettingsService.GetCategoryFilterEnabled();
-
-        /// <summary>记下这次的选择：只影响"以后新建的实例的默认值"和底部选择栏的显隐判断。</summary>
-        public static void Remember(bool enabled)
-        {
-            if (_enabled == enabled) return;
-            _enabled = enabled;
-            SettingsService.SetCategoryFilterEnabled(enabled);
-            Changed?.Invoke();
-        }
-    }
-
-    // 作用：模组库页与配置页共用的"分类筛选"：分类缓存、芯片集合、选中状态、命中判断，
+    // 作用：模组库页与配置页共用的"分类筛选"：分类缓存、多选键集合、命中判断，
     // 以及手动归类 / 自建分类的编辑入口。
-    // 宿主在每次刷新时用 Rebuild 给出"已过其他筛选"的候选集，再用 Matches 做最后一道筛选。
+    //
+    // 多选（并集）是标签式搜索的直接产物：每个选中的分类是搜索框里的一枚标签，
+    // 摘掉标签就是取消选中。这里不再有"整体开关"——分类永远可用，没选任何分类就等于不筛。
     public sealed class ModCategoryFilter : BaseViewModel, IDisposable
     {
         private readonly Func<string, ModAssetSummary?> _summaryOf;
         private readonly Action _onSelectionChanged;
         // 自动分类只在资产摘要对象变化时重算。
         private readonly Dictionary<string, (ModAssetSummary? Summary, ModCategory Category)> _cache = new(StringComparer.OrdinalIgnoreCase);
-        private string? _selected;
+        private readonly ModCategorySelection _selection = new();
         // 上一次 Rebuild 统计芯片时各 Mod 的分类签名，用来判断"资产摘要后来才到、分类变了"。
         private readonly Dictionary<string, string> _counted = new(StringComparer.OrdinalIgnoreCase);
-        private readonly LibraryCategoryChip _addChip = new(string.Empty, string.Empty, CategoryChipKind.Add, 0, false);
-        private RelayCommand? _selectCommand;
-        private bool _enabled;
 
         public ModCategoryFilter(Func<string, ModAssetSummary?> summaryOf, Action onSelectionChanged)
         {
             _summaryOf = summaryOf ?? throw new ArgumentNullException(nameof(summaryOf));
             _onSelectionChanged = onSelectionChanged ?? throw new ArgumentNullException(nameof(onSelectionChanged));
-            _enabled = CategoryFilterPreference.IsEnabled;
             CategoryStore.Changed += OnStoreChanged;
         }
 
-        // 关掉时彻底不参与：不显示芯片、不筛选、不做分类计算。
-        // 每个宿主页面各有一份，互不影响：标题卡上的分类开关只切所在的那一侧。
-        public bool IsEnabled
-        {
-            get => _enabled;
-            set
-            {
-                if (_enabled == value) return;
-                _enabled = value;
-                if (!value)
-                {
-                    _selected = null;
-                    _counted.Clear();
-                    Chips.Clear();
-                }
+        /// <summary>选中的分类键（并集语义）。只读投影：改它请走 <see cref="Toggle"/> / <see cref="ClearSelection"/>。</summary>
+        public IReadOnlyList<string> SelectedKeys => _selection.Keys;
 
-                OnPropertyChanged(nameof(IsEnabled));
-                OnPropertyChanged(nameof(HasChips));
-                OnPropertyChanged(nameof(IsActive));
-                // 只记住这次选择（作为下次的默认值），不通知别的页面实例。
-                CategoryFilterPreference.Remember(value);
-                // 开 → 统计芯片；关 → 恢复完整列表。
-                _onSelectionChanged();
-            }
+        /// <summary>是否正在按分类筛选。为 false 时列表是全集。</summary>
+        public bool IsActive => _selection.IsActive;
+
+        /// <summary>选择变了（点标签 / 清空 / 自建分类被删）。**不会**触发宿主刷新，只让界面重新投影。</summary>
+        public event Action? SelectionChanged;
+
+        public bool Toggle(string key)
+        {
+            if (!_selection.Toggle(key)) return false;
+            NotifySelectionChanged(refreshHost: true);
+            return true;
         }
 
-        // 分类的用户数据变了（新建/改名/删除/手动归类）：选中的自建分类被删就退回"全部"，然后整体刷新。
+        public bool ClearSelection()
+        {
+            if (!_selection.Clear()) return false;
+            NotifySelectionChanged(refreshHost: true);
+            return true;
+        }
+
+        public bool IsSelected(string key) => _selection.Contains(key);
+
+        private void NotifySelectionChanged(bool refreshHost)
+        {
+            OnPropertyChanged(nameof(IsActive));
+            foreach (var chip in Chips) chip.IsSelected = _selection.Contains(chip.Key);
+            SelectionChanged?.Invoke();
+            if (refreshHost) _onSelectionChanged();
+        }
+
+        // 分类的用户数据变了（新建/改名/删除/手动归类）：自建分类被删就摘键，然后整体刷新。
         private void OnStoreChanged()
         {
-            if (!_enabled) return;
-            if (_selected is { } selected && CategoryKey.IsCustom(selected)
-                && !CategoryStore.Custom.Any(item => CategoryKey.OfCustom(item.Id) == selected))
-            {
-                _selected = null;
-                OnPropertyChanged(nameof(IsActive));
-            }
+            if (PruneDeletedCustomKeys()) OnPropertyChanged(nameof(IsActive));
+            SelectionChanged?.Invoke();
             _onSelectionChanged();
+        }
+
+        // 只摘"已经不存在的自建分类"。内置分类即使这一刻 0 个 Mod 也不摘：那会悄悄删掉
+        // 用户刚点出来的标签，而且列表是不是空的本来就该由列表自己说。
+        private bool PruneDeletedCustomKeys()
+        {
+            var known = ModCategoryClassifier.Ordered.Select(CategoryKey.Of)
+                .Append(CategoryKey.Pending)
+                .Concat(CategoryStore.Custom.Select(item => CategoryKey.OfCustom(item.Id)));
+            return _selection.PruneKnown(known);
         }
 
         public void Dispose()
@@ -229,20 +219,6 @@ namespace HD2ModManager.ViewModels
         }
 
         public ObservableCollection<LibraryCategoryChip> Chips { get; } = new();
-        // 启用时条一直在：至少有"全部"和"新建分类"。
-        public bool HasChips => _enabled && Chips.Count > 0;
-        // 选中了具体分类：此时列表是子集，宿主应禁用依赖完整顺序的操作（如拖动排序）。
-        public bool IsActive => _enabled && _selected is not null;
-
-        public RelayCommand SelectCommand => _selectCommand ??= new RelayCommand(parameter =>
-        {
-            if (parameter is not LibraryCategoryChip chip || chip.IsAdd) return;
-            var key = chip.Kind == CategoryChipKind.All ? null : chip.Key;
-            if (key == _selected) return;
-            _selected = key;
-            OnPropertyChanged(nameof(IsActive));
-            _onSelectionChanged();
-        });
 
         // ---- 分类计算 ----
 
@@ -267,18 +243,13 @@ namespace HD2ModManager.ViewModels
             return keys;
         }
 
-        public bool Matches(string guid)
-        {
-            if (!_enabled || _selected is not { } selected) return true;
-            return GetKeys(guid).Contains(selected);
-        }
+        public bool Matches(string guid) => _selection.Matches(GetKeys(guid));
 
         // 资产摘要是后台异步算出来的：刚打开时多数 Mod 还是"待分类"，摘要到了才有真实分类。
         // 宿主在内容刷新时问一句：已统计过的 Mod 里有没有谁的分类变了；变了就该整体刷新一次芯片。
         // guids 为 null 表示"全部已统计的 Mod"。
         public bool HasClassificationChanged(IEnumerable<string>? guids)
         {
-            if (!_enabled) return false;
             foreach (var guid in guids ?? _counted.Keys.ToArray())
             {
                 if (_counted.TryGetValue(guid, out var counted) && counted != Signature(guid)) return true;
@@ -291,13 +262,6 @@ namespace HD2ModManager.ViewModels
         public void Rebuild(IReadOnlyCollection<string> candidateGuids)
         {
             _counted.Clear();
-            if (!_enabled)
-            {
-                _selected = null;
-                if (Chips.Count != 0) Chips.Clear();
-                OnPropertyChanged(nameof(HasChips));
-                return;
-            }
 
             var counts = new Dictionary<string, int>();
             foreach (var guid in candidateGuids)
@@ -307,23 +271,18 @@ namespace HD2ModManager.ViewModels
                 foreach (var key in keys) counts[key] = counts.GetValueOrDefault(key) + 1;
             }
 
-            var custom = CategoryStore.Custom;
-            // 当前选中的分类已经没有 Mod：内置分类退回"全部"，不让列表空着。自建分类允许为空（刚建好时就是空的）。
-            if (_selected is { } selected)
+            if (PruneDeletedCustomKeys())
             {
-                var gone = CategoryKey.IsCustom(selected)
-                    ? !custom.Any(item => CategoryKey.OfCustom(item.Id) == selected)
-                    : counts.GetValueOrDefault(selected) == 0;
-                if (gone) _selected = null;
+                OnPropertyChanged(nameof(IsActive));
+                SelectionChanged?.Invoke();
             }
 
+            var custom = CategoryStore.Custom;
             var desired = new List<LibraryCategoryChip>();
-            Chip(desired, string.Empty, "全部", CategoryChipKind.All, candidateGuids.Count);
             foreach (var category in ModCategoryClassifier.Ordered)
             {
                 var key = CategoryKey.Of(category);
-                if (counts.GetValueOrDefault(key) > 0)
-                    Chip(desired, key, ModCategoryClassifier.DisplayName(category), CategoryChipKind.BuiltIn, counts[key]);
+                Chip(desired, key, ModCategoryClassifier.DisplayName(category), CategoryChipKind.BuiltIn, counts.GetValueOrDefault(key));
             }
             if (counts.GetValueOrDefault(CategoryKey.Pending) > 0)
                 Chip(desired, CategoryKey.Pending, "待分类", CategoryChipKind.Pending, counts[CategoryKey.Pending]);
@@ -332,16 +291,14 @@ namespace HD2ModManager.ViewModels
                 var key = CategoryKey.OfCustom(item.Id);
                 Chip(desired, key, item.Name, CategoryChipKind.Custom, counts.GetValueOrDefault(key));
             }
-            desired.Add(_addChip);
             Reconcile(desired);
-            OnPropertyChanged(nameof(HasChips));
             OnPropertyChanged(nameof(IsActive));
         }
 
         private void Chip(List<LibraryCategoryChip> into, string key, string label, CategoryChipKind kind, int count)
         {
             var existing = Chips.FirstOrDefault(chip => chip.Kind == kind && chip.Key == key);
-            var selected = kind == CategoryChipKind.All ? _selected is null : key == _selected;
+            var selected = _selection.Contains(key);
             if (existing is null)
             {
                 into.Add(new LibraryCategoryChip(key, label, kind, count, selected));
@@ -364,6 +321,21 @@ namespace HD2ModManager.ViewModels
                 if (current < 0) Chips.Insert(i, desired[i]);
                 else if (current != i) Chips.Move(current, i);
             }
+        }
+
+        /// <summary>一个分类键现在叫什么（给搜索框里的标签用）。找不到就退回键本身。</summary>
+        public string LabelOf(string key)
+        {
+            var chip = Chips.FirstOrDefault(item => string.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase));
+            if (chip is not null) return chip.Label;
+            if (CategoryKey.TryParseBuiltIn(key, out var category)) return ModCategoryClassifier.DisplayName(category);
+            if (string.Equals(key, CategoryKey.Pending, StringComparison.Ordinal)) return "待分类";
+            if (CategoryKey.IsCustom(key))
+            {
+                var id = CategoryKey.CustomId(key);
+                return CategoryStore.Custom.FirstOrDefault(item => item.Id == id)?.Name ?? "已删除的分类";
+            }
+            return key;
         }
 
         // ---- 手动归类 ----

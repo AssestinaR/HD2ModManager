@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Animation;
+using HD2ModCore.Infrastructure.Sectional;
 using HD2ModManager.Controls.Lists;
 using HD2ModManager.ViewModels;
 
@@ -78,8 +79,11 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 
 	private void OnAvailableRowClicked(object? sender, ModListRowEventArgs e)
 	{
-		if (DataContext is ArmorRegistryPageViewModel { IsMappedTabSelected: true } viewModel)
-			viewModel.NavigateToMappedProvider(e.Item as RuntimeArmorChoiceViewModel);
+		// 已映射的行是"这个护甲被映射到哪"的视角：点它就跳到左侧对应的视觉来源。
+		// 标签不互斥之后一行到底属于哪一类，只能由行自己说了算。
+		if (e.Item is RuntimeArmorChoiceViewModel { PickerTab: ArmorMappingPickerTab.Mapped } item
+			&& DataContext is ArmorRegistryPageViewModel viewModel)
+			viewModel.NavigateToMappedProvider(item);
 	}
 
 	private void OnAvailableRowActionInvoked(object? sender, ModListRowActionEventArgs e)
@@ -87,12 +91,6 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 		if (e.Action == ModListRowAction.ArmorAssign
 			&& DataContext is ArmorRegistryPageViewModel viewModel)
 			viewModel.AssignAvailableItem(e.Item as RuntimeArmorChoiceViewModel);
-	}
-
-	private void OnCycleAvailableArmorUnitFilterClick(object sender, RoutedEventArgs e)
-	{
-		if (DataContext is ArmorRegistryPageViewModel viewModel)
-			viewModel.CycleAvailableArmorUnitFilter();
 	}
 
 	private void OnBackToProvidersClick(object? sender, EventArgs e)

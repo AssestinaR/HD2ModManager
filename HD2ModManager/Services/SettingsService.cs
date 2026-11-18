@@ -34,8 +34,6 @@ namespace HD2ModManager.Services
             public DateTime? LastGameDataIndexCheckUtc { get; set; }
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public bool AutoImportToActiveProfile { get; set; } = true;
-            // 列表顶部的自动分类筛选条是否显示。默认开。
-            public bool CategoryFilterEnabled { get; set; } = true;
             // 用户自建分类，以及"某个 Mod 手动归到哪个分类"的覆盖（Mod Guid → 分类键）。
             public List<CustomCategoryRecord>? CustomCategories { get; set; }
             public Dictionary<string, string>? CategoryOverrides { get; set; }
@@ -266,14 +264,6 @@ namespace HD2ModManager.Services
                 Update(model => model.GameDataIndexCheckIntervalHours = NormalizeInterval(value));
                 return true;
             }
-            catch { return false; }
-        }
-
-        public static bool GetCategoryFilterEnabled() => LoadAll()?.CategoryFilterEnabled ?? true;
-
-        public static bool SetCategoryFilterEnabled(bool enabled)
-        {
-            try { Update(model => model.CategoryFilterEnabled = enabled); return true; }
             catch { return false; }
         }
 

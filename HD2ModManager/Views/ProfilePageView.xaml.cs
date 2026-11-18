@@ -102,11 +102,6 @@ public partial class ProfilePageView : UserControl
 
     private void OnListBackgroundClick(object? sender, EventArgs e) => ClearTransientSelection();
 
-    private void OnToggleOutdatedFilterClick(object sender, RoutedEventArgs e)
-    {
-        if (DataContext is ProfilePageViewModel vm) vm.ShowOnlyOutdated = !vm.ShowOnlyOutdated;
-    }
-
     private static void ClearTransientSelection()
     {
         if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)

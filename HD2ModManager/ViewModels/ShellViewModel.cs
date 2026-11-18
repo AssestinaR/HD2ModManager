@@ -2515,17 +2515,7 @@ namespace HD2ModManager.ViewModels
                 return null;
             }
 
-            if (!filter.IsEnabled)
-            {
-                // 出现判据用的是全局"上次记忆值"（BottomBarCoordinator.ShowSetCategory），
-                // 而这里要的是本页那份 filter 的开关，两者语义不同 —— 所以真的会出现
-                // "按钮看得见、点下去却没地方放分类"。这句就是那种情况下的解释。
-                _notificationService.Show(
-                    $"{pageName}的分类栏现在是关着的，没有地方放分类。请先在那页标题卡上打开分类开关，再回来点「设置分类」。",
-                    NotificationLevel.Info, TimeSpan.FromSeconds(10));
-                return null;
-            }
-
+            // 分类不再有总开关：只要这一页有分类筛选，就一定能放分类。
             return (filter, _bottomBar.SelectedIds);
         }
 

@@ -36,8 +36,6 @@ namespace HD2ModManager.ViewModels
             BeginMoveCommand = new RelayCommand(_ => BeginMove());
             BeginInsertCommand = new RelayCommand(_ => BeginInsert());
             Registrations.LayoutChanged += (_, snapshot) => LayoutChanged?.Invoke(this, snapshot);
-            // 分类开关变化时，选择栏上的"设置分类"按钮随之出现/消失。
-            CategoryFilterPreference.Changed += () => OnPropertyChanged(nameof(ShowSetCategory));
             _selection.SelectionChanged += (_, _) =>
             {
                 if (!_suppressSelectionCancel) CancelEdit();
@@ -84,8 +82,8 @@ namespace HD2ModManager.ViewModels
         // 装饰包已不再支持：`HasSelectedAttachableDecorations` 已删除（恒为 false）。
         private bool HasSelectedDirectHostOptions => TryGetSelectedDirectHostOptions(out _, out _);
         public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
-        // 库页/配置页的选择都可以一键批量设置分类；分类被关掉时不显示。
-        public bool ShowSetCategory => IsRelationshipSourceSelection && CategoryFilterPreference.IsEnabled;
+        // 库页/配置页的选择都可以一键批量设置分类。分类不再有总开关，所以只看作用域。
+        public bool ShowSetCategory => IsRelationshipSourceSelection;
         // 「重构」：**只看作用域**，不看选中的是什么。
         //
         // 谁是 sectional 系列、谁有后代、后代里有没有可重构的 —— 这些都要扫盘。塞进绑定属性

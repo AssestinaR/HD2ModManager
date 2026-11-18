@@ -135,7 +135,6 @@ public sealed class ModDetailsStub
             ModDetailsCardLayout.Sync(_cards, new ModDetailsCardState(
                 HasDescription: HasDescription,
                 CanUsePatchTools: CanUsePatchTools,
-                ShowPatchSettingsCard: ShowPatchSettingsCard,
                 IsDecoration: IsDecoration,
                 CanShowDecorationPlan: CanShowDecorationPlan,
                 IsVpkMod: IsVpkMod,
