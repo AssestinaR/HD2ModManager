@@ -48,10 +48,11 @@ public sealed class UnitVersionInformationProducer : IUnitVersionInformationProd
 		var directory = Path.Combine(root, node.RelativePath);
 		var builder = new StringBuilder(node.Id.Value.ToString("N"));
 		if (Directory.Exists(directory))
-			foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+			foreach (var path in ModNodePayloadLayout.EnumerateEffectiveFilesByName(directory).Values.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 			{
 				var info = new FileInfo(path);
-				builder.Append('|').Append(Path.GetFileName(path)).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks);
+				var relative = Path.GetRelativePath(directory, path).Replace('\\', '/');
+				builder.Append('|').Append(relative.ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks);
 			}
 		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
 	}

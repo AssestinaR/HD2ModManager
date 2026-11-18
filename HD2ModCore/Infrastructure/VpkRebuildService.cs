@@ -41,6 +41,9 @@ public sealed record VpkRebuildOutcome(
 
 	/// <summary>专属多选（P5）：实际编进去的全部目标的规则种子。</summary>
 	public IReadOnlyList<KitInstance.KitExclusiveSeed> ExclusiveTargets { get; init; } = [];
+
+	/// <summary>编译阶段用户一键关闭多余组件后更新的 <c>disabled</c> 集合。</summary>
+	public IReadOnlyDictionary<string, IReadOnlyCollection<int>>? UpdatedDisabledSections { get; init; }
 }
 
 /// <summary>
@@ -287,8 +290,10 @@ public static class VpkRebuildService
 			}
 
 			var units = fresh?.UnitCount ?? 0;
-			var previousMaterials = await CountDistinctMaterialsAsync(payloadDirectory, cancellationToken).ConfigureAwait(false);
-			var freshMaterials = await CountDistinctMaterialsAsync(produced, cancellationToken).ConfigureAwait(false);
+			var previousMap = await TryReadSectionMapAsync(payloadDirectory, cancellationToken).ConfigureAwait(false);
+			var freshMap = await TryReadSectionMapAsync(produced, cancellationToken).ConfigureAwait(false);
+			var previousMaterials = CountDistinctMaterials(previousMap);
+			var freshMaterials = CountDistinctMaterials(freshMap);
 
 			// 材质塌陷守门。
 			//
@@ -296,8 +301,11 @@ public static class VpkRebuildService
 			// 材质写在同批的材料包里；那些包不在解析集合时，每个 section 引用的材质会
 			// 全部塌成同一个兜底 id。而 Unit 数、section 数、patch 大小全都正常——
 			// 文件层面完全看不出来，进游戏才发现一身衣服共用一张图。
-			// 所以只要"被引用的不同材质个数"比上一次少，就不替换（临时产物留着给人看）。
-			if (previousMaterials > 0 && freshMaterials < previousMaterials)
+			//
+			// ⚠️ 同时必须区分「真正的材质塌陷」与「合法剔除默认关闭的 bodygroup / `$no_draw` section」：
+			// 后者只是少了那几个被剔掉部件独有的 section，存活下来的 `sourceMaterial` 各自仍然保持独立的
+			// `materialId`（见 HasMaterialCollapse）。只拿总数一刀切会把结构修正永久挡在门外。
+			if (HasMaterialCollapse(previousMap, freshMap))
 			{
 				preserveStaging = true;
 				return VpkRebuildOutcome.Failed(
@@ -478,6 +486,7 @@ public static class VpkRebuildService
 			var rekeyed = false;
 			KitInstance.KitExclusiveSeed? exclusiveSeed = null;
 			IReadOnlyList<KitInstance.KitExclusiveSeed> exclusiveSeeds = [];
+			IReadOnlyDictionary<string, IReadOnlyCollection<int>>? updatedDisabled = null;
 			string? targetName = null;
 			string? incompleteReason = null;
 			if (!isUnitMod)
@@ -493,6 +502,7 @@ public static class VpkRebuildService
 					stage => onStage?.Invoke(stage), cancellationToken, exclusiveItemId: exclusiveItemId, exclusiveItemIds: exclusiveItemIds).ConfigureAwait(false);
 				exclusiveSeed = compile.Exclusive;
 				exclusiveSeeds = compile.ExclusiveTargets;
+				updatedDisabled = compile.UpdatedDisabledSections;
 				foreach (var warning in compile.Notes) notes.Add(warning);
 				if (!compile.Ok)
 				{
@@ -524,6 +534,7 @@ public static class VpkRebuildService
 				IncompleteReason = incompleteReason,
 				Exclusive = exclusiveSeed,
 				ExclusiveTargets = exclusiveSeeds,
+				UpdatedDisabledSections = updatedDisabled,
 			};
 		}
 		catch (OperationCanceledException)
@@ -619,35 +630,92 @@ public static class VpkRebuildService
 		// 现在交给 Hd2ModProcess.DescribeFailure：它先从 JSON 里取真正的原因，取不到才退回原文。
 		=> Hd2ModProcess.DescribeFailure(result, "重新转换");
 
-	/// <summary>
-	/// 一个 <c>sections.json</c> 里被 section 实际引用的**不同**材质 id 个数；读不到就是 0。
-	/// <para>
-	/// <b>为什么用这张表而不是转换报告。</b>模型 patch 里不含材质定义（材质写在同批的材质包里），
-	/// 报告上的 <c>materials</c> 恒为 0；而"每个 section 绑了哪个材质 id"这件事，
-	/// <c>sections.json</c> 逐节都记着。两个产物比这个数字，才问得出一句实话：
-	/// 材质是不是塌成一张了。
-	/// </para>
-	/// </summary>
-	private static async Task<int> CountDistinctMaterialsAsync(string directory, CancellationToken cancellationToken)
+	private static async Task<HD2ModCore.Domain.WardrobeSectionMapDocument?> TryReadSectionMapAsync(
+		string directory,
+		CancellationToken cancellationToken)
 	{
 		var path = Path.Combine(directory, WardrobeSectionMapFile.FileName);
-		if (!File.Exists(path)) return 0;
+		if (!File.Exists(path)) return null;
 		try
 		{
-			var document = await WardrobeSectionMapFile.ReadAsync(path, cancellationToken).ConfigureAwait(false);
-			return document.Units
-				.SelectMany(unit => unit.Sections)
-				.Select(section => section.MaterialId)
-				.Where(id => !string.IsNullOrWhiteSpace(id))
-				.Distinct(StringComparer.OrdinalIgnoreCase)
-				.Count();
+			return await WardrobeSectionMapFile.ReadAsync(path, cancellationToken).ConfigureAwait(false);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException
 			or JsonException or UnauthorizedAccessException)
 		{
 			// 读不懂就当"没有可比数字"：守门不会因为旧表损坏而误拦。
-			return 0;
+			return null;
 		}
+	}
+
+	/// <summary>
+	/// 一个 <c>sections.json</c> 里被 section 实际引用的**不同**材质 id 个数；读不到就是 0。
+	/// </summary>
+	public static int CountDistinctMaterials(HD2ModCore.Domain.WardrobeSectionMapDocument? document)
+		=> document is null
+			? 0
+			: document.Units
+				.SelectMany(unit => unit.Sections)
+				.Select(section => section.MaterialId)
+				.Where(id => !string.IsNullOrWhiteSpace(id))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.Count();
+
+	/// <summary>
+	/// 判定新旧两份 <c>sections.json</c> 是否发生了<b>材质塌陷</b>（如漏掉同批材质包导致多个源材质塌成同一个兜底 id）。
+	/// <para>
+	/// 当新旧表都带有逐节 <c>SourceMaterial</c> 且 Unit 数未减少时，在两者<b>共有的源材质集合</b>上比较
+	/// 不同 <c>MaterialId</c> 数：合法剔除默认关闭的 bodygroup（例如 <c>faceeffect</c>）只会移除该部件独有的
+	/// <c>SourceMaterial</c>，存活下来的源材质各自仍保有独立的 <c>MaterialId</c>，不该被误拦；
+	/// 而同批材质包丢失会让存活下来的源材质塌成少数几个 id，仍然会被拦住。
+	/// </para>
+	/// </summary>
+	public static bool HasMaterialCollapse(
+		HD2ModCore.Domain.WardrobeSectionMapDocument? previous,
+		HD2ModCore.Domain.WardrobeSectionMapDocument? fresh)
+	{
+		var previousDistinct = CountDistinctMaterials(previous);
+		if (previousDistinct <= 0)
+			return false;
+
+		var freshDistinct = CountDistinctMaterials(fresh);
+		if (freshDistinct >= previousDistinct)
+			return false;
+		if (fresh is null || freshDistinct == 0 || fresh.Units.Count < previous!.Units.Count)
+			return true;
+
+		var previousSections = previous.Units.SelectMany(unit => unit.Sections).ToArray();
+		var freshSections = fresh.Units.SelectMany(unit => unit.Sections).ToArray();
+		var freshSources = freshSections
+			.Select(section => section.SourceMaterial)
+			.Where(name => !string.IsNullOrWhiteSpace(name))
+			.Select(name => name!)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var commonSources = previousSections
+			.Select(section => section.SourceMaterial)
+			.Where(name => !string.IsNullOrWhiteSpace(name) && freshSources.Contains(name))
+			.Select(name => name!)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+		if (commonSources.Count == 0)
+			return true;
+
+		var previousCommonDistinct = previousSections
+			.Where(section => !string.IsNullOrWhiteSpace(section.SourceMaterial)
+				&& commonSources.Contains(section.SourceMaterial)
+				&& !string.IsNullOrWhiteSpace(section.MaterialId))
+			.Select(section => section.MaterialId)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.Count();
+		var freshCommonDistinct = freshSections
+			.Where(section => !string.IsNullOrWhiteSpace(section.SourceMaterial)
+				&& commonSources.Contains(section.SourceMaterial)
+				&& !string.IsNullOrWhiteSpace(section.MaterialId))
+			.Select(section => section.MaterialId)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.Count();
+
+		return freshCommonDistinct < previousCommonDistinct;
 	}
 
 	private static bool IsVolume(string path)

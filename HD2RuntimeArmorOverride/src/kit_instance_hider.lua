@@ -17,7 +17,7 @@ local GLOBAL_KEY = 'HD2KitInstanceHider'
 local existing = rawget(_G, GLOBAL_KEY)
 if existing then return existing end
 
-local M = { version = '0.4.5', status = 'starting' }
+local M = { version = '0.4.6', status = 'starting' }
 rawset(_G, GLOBAL_KEY, M)
 
 local SWEEP_INTERVAL = 0.5          -- 秒：两次完整扫描的最小间隔
@@ -937,17 +937,18 @@ end
 -- 游戏内安装。g 是全局表（测试里传假的）。
 ---------------------------------------------------------------------------
 
--- 与 armor_override_runtime.lua 的 base_directory() 同一套求法。
+-- 与 armor_override_runtime.lua 的 base_directory() 同一套求法：
+-- 规则文件始终优先跟真实 %LOCALAPPDATA% 走（MDL3 在 ProgramData 安装时 log_directory 在 C:/ProgramData 下）。
 local function base_directory(g)
-	local loader = rawget(g, 'CowboyBingusModLoader')
-	if type(loader) == 'table' and type(loader.log_directory) == 'string' then
-		return (loader.log_directory:gsub('[/\\]Logs$', ''))
-	end
 	local osTable = rawget(g, 'os')
 	local local_app_data = type(osTable) == 'table' and type(osTable.getenv) == 'function'
 		and osTable.getenv('LOCALAPPDATA') or nil
-	if type(local_app_data) == 'string' and local_app_data ~= '' then
+	if type(local_app_data) == 'string' and local_app_data ~= '' and not local_app_data:find('?', 1, true) then
 		return local_app_data .. '/CowboyBingus/Helldivers2'
+	end
+	local loader = rawget(g, 'CowboyBingusModLoader')
+	if type(loader) == 'table' and type(loader.log_directory) == 'string' and loader.log_directory ~= '' then
+		return (loader.log_directory:gsub('[/\\]Logs$', ''))
 	end
 	return nil
 end

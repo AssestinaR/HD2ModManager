@@ -110,7 +110,7 @@ public partial class ModDetailsPageViewModel
 		{
 			var outcome = await Legacy2SectionalConverter
 				.RunAsync(node.Id.Value.ToString("N"), directory,
-					SettingsService.CreateVpkHostContext(),
+					SettingsService.CreateVpkHostContext(node.Metadata.Name),
 					Report, cancellation)
 				.ConfigureAwait(true);
 
@@ -244,7 +244,7 @@ public partial class ModDetailsPageViewModel
 			var outcome = await VpkRebuildService.RunAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				SettingsService.CreateVpkHostContext(),
+				SettingsService.CreateVpkHostContext(node.Metadata.Name),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
@@ -264,6 +264,7 @@ public partial class ModDetailsPageViewModel
 			// 而状态只反映用户确认过的东西。失败/中断时状态保持不动。
 			try
 			{
+				ApplyCompilerUpdatedDisabledSections(outcome.UpdatedDisabledSections);
 				var applied = rebuildOption is { } picked
 					? _vpkFile with
 					{

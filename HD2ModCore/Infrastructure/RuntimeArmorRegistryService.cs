@@ -225,6 +225,22 @@ public sealed class RuntimeArmorRegistryService
 		return Path.GetFullPath(path);
 	}
 
+	/// <summary>
+	/// 当注册表根是标准的 <c>.../ArmorRegistry</c> 布局时，顺带确保同级 <c>Logs</c> 目录存在。
+	/// 纯净环境或 ProgramData 版 MDL3 不会在真实 <c>%LOCALAPPDATA%\CowboyBingus\Helldivers2</c> 下预先建 <c>Logs</c>，
+	/// 而 Lua 的 <c>io.open(..., 'ab')</c> 不会自动创建父目录。仅在末级目录名为 <c>ArmorRegistry</c> 时创建，避免污染单元测试临时父目录。
+	/// </summary>
+	public static void EnsureSiblingLogsDirectory(string registryRoot)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(registryRoot);
+		var trimmed = Path.TrimEndingDirectorySeparator(Path.GetFullPath(registryRoot));
+		if (!string.Equals(Path.GetFileName(trimmed), "ArmorRegistry", StringComparison.OrdinalIgnoreCase))
+			return;
+		var parent = Path.GetDirectoryName(trimmed);
+		if (!string.IsNullOrEmpty(parent))
+			Directory.CreateDirectory(Path.Combine(parent, "Logs"));
+	}
+
 	/// <summary>素体件表里的 unit 是 16 位十六进制字符串；解析失败表示这条件不可用。</summary>
 	static bool TryParseUnitHex(string? text, out ulong unit)
 	{
@@ -489,6 +505,7 @@ public sealed class RuntimeArmorRegistryService
 		ValidateModels(models, mappings);
 		// 同 ReadAsync：这三个字段没有在役消费者，不再阻断性校验（见那段注释）。
 		Directory.CreateDirectory(registryRoot);
+		EnsureSiblingLogsDirectory(registryRoot);
 		var lockPath = Path.Combine(registryRoot, ".manager.lock");
 		await using var lease = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
 		var currentFingerprint = await FingerprintProtocolAsync(cancellationToken).ConfigureAwait(false);

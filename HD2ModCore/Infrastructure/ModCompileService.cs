@@ -38,6 +38,9 @@ public sealed record ModCompileOutcome(
 	public int CarrierCount { get; init; }
 
 	public int MergedModelCount { get; init; }
+
+	/// <summary>当用户在 128 MiB 超限弹窗里选择一键关闭多余组件时，返回已同步持久化到 <c>wardrobe.json</c> 的新 <c>disabled</c> 集合。</summary>
+	public IReadOnlyDictionary<string, IReadOnlyCollection<int>>? UpdatedDisabledSections { get; init; }
 }
 
 /// <summary>
@@ -111,6 +114,27 @@ public static class ModCompileService
 		if (!result.Ok)
 			return ModCompileOutcome.Failure(result.Error ?? "编译失败。", result.Warnings);
 
+		var notes = new List<string>(result.Info);
+		notes.AddRange(result.Warnings);
+		if (result.UpdatedDisabledSections is not null)
+		{
+			try
+			{
+				var latestWardrobe = await VpkModWardrobeService.ReadAsync(modDirectory, cancellationToken).ConfigureAwait(false);
+				var updatedWardrobe = latestWardrobe with
+				{
+					ComponentTreeEnabled = true,
+					HeadMergeIntoBody = headMerge,
+					State = new Domain.VpkWardrobeState(result.UpdatedDisabledSections),
+				};
+				await VpkModWardrobeService.WriteAsync(modDirectory, updatedWardrobe, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+			{
+				notes.Add($"已关闭的多余组件未能同步写入 wardrobe.json：{exception.Message}");
+			}
+		}
+
 		// 目标名：**目标是自己那具素体时一律叫「自定义素体」**。
 		// 素体的名字（`水墨牛牛-…`）属于产物本身，不该跑到"目标"这个位置上——
 		// 用户在看到"已换到 水墨牛牛（自定义素体）"时会以为换到了另一具素体。
@@ -119,8 +143,6 @@ public static class ModCompileService
 				&& target.StartsWith(RuntimeArmorRegistryService.CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase)
 					? "自定义素体"
 					: (string.IsNullOrWhiteSpace(wardrobe.TargetArmorName) ? "自定义素体" : wardrobe.TargetArmorName));
-		var notes = new List<string>(result.Info);
-		notes.AddRange(result.Warnings);
 
 		return new ModCompileOutcome(
 			true, null, result.Kind == SectionalCompileKind.Armor, targetName, notes)
@@ -130,6 +152,7 @@ public static class ModCompileService
 			SkippedTargets = result.SkippedTargets,
 			CarrierCount = result.CarrierCount,
 			MergedModelCount = result.MergedModelCount,
+			UpdatedDisabledSections = result.UpdatedDisabledSections,
 			Rekey = new VpkRekeyOutcome(
 				true,
 				null,

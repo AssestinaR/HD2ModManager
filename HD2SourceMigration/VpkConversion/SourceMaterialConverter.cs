@@ -1808,9 +1808,28 @@ public sealed class SourceMaterialConverter
 		/// </summary>
 		public string? LightwarpTexture { get; init; }
 
+		/// <summary>源侧声明了 <c>$additive 1</c>（亮度已转入遮罩 alpha）。</summary>
+		public bool IsAdditive { get; init; }
+
+		/// <summary>
+		/// 源侧 <c>$color</c>/<c>$color2</c> 与原生 <c>VertexLitGeneric</c> <c>$lightwarptexture</c>
+		/// 合成后的逐通道底色倍率（sRGB 空间 0..1，缺省全 1.0）。
+		/// </summary>
+		public double[] AlbedoTint { get; init; } = [1.0, 1.0, 1.0];
+
 		public MaterialIdentity ToIdentity() => new(
 			MaterialId, TemplateName, BaseTexture, UseAlphaClip, MatcapTextureName, MatcapMean is not null);
 	}
+
+	/// <summary>
+	/// 这张贴图是否由另一个「纯贴图换色包」（0 个 VMT）提供。
+	/// 命中时不能把贴图改名烘进当前材质包，否则用户在管理器里切换纯贴图包将失去作用。
+	/// </summary>
+	private bool IsForeignPureTexturePack(string textureStem)
+		=> source.PrimaryVpkPath is not null
+			&& !source.OwnsVtf(textureStem)
+			&& source.TryGetVtfSource(textureStem, out var ownerVpkPath, out _)
+			&& !source.VpkOwnsAnyVmt(ownerVpkPath);
 
 	/// <summary>
 	/// 只解析材质身份（id + 模板 + 底色名），<b>不编码任何贴图</b>。
@@ -2528,6 +2547,8 @@ public sealed class SourceMaterialConverter
 				vtf = VtfFile.Read(vtfBytes);
 				// ⚠️ 量 alpha 必须在清零之前（清零发生在编码那一步，见 BuildBaseColorTexture）。
 				rgba = DecodeTextureCached(textureName, vtfBytes, vtf);
+				if (vmt.WantsAdditive)
+					MaterialAppearance.ConvertAdditiveToAlpha(rgba);
 				baseAlpha = TextureAlpha.Measure(rgba);
 			}
 			catch (Exception exception) when (IsTextureReadFailure(exception))
@@ -2536,6 +2557,8 @@ public sealed class SourceMaterialConverter
 				return LoadOutcome.Failed;
 			}
 		}
+
+		var rawTextureName = textureName;
 
 		// **源底色的像素与尺寸必须在这里定格。**
 		//
@@ -2705,11 +2728,19 @@ public sealed class SourceMaterialConverter
 		// 所以那一类必须保留裁切。两条实测互相印证。
 		//
 		// 要回到"`$alphatest` 也按底图 alpha 裁"：`HD2_CUTOUT_ALPHATEST=cut`。
+		fullyTransparent = !IsGeometryCut(stem)
+			&& vmt.WantsTransparency
+			&& !vmt.WantsAdditive
+			&& baseAlpha.IsEffectivelyTransparent;
+
 		var wantsCutout = vmt.WantsTranslucency
 			|| vmt.WantsAlphaToCoverage
+			|| vmt.WantsAdditive
 			|| (vmt.WantsAlphaTest && !AlphatestDisabled);
 
-		var provisionalUseAlphaClip = !IsGeometryCut(stem) && ShouldUseAlphaClip(wantsCutout, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
+		var provisionalUseAlphaClip = !fullyTransparent
+			&& !IsGeometryCut(stem)
+			&& ShouldUseAlphaClip(wantsCutout, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest, vmt.WantsAdditive);
 		if (provisionalUseAlphaClip && matcapIsMetal && metalCutout == MetalCutoutPolicy.MetalWins)
 			provisionalUseAlphaClip = false;   // MetalWins 会放弃镂空、回到 advanced
 		var provisionalTemplate = ResolveTemplate(provisionalUseAlphaClip);
@@ -2872,6 +2903,60 @@ public sealed class SourceMaterialConverter
 			matcapMeans.TryGetValue(stem, out matcapMean);
 		}
 
+		// ===== 源侧底色调色（$color/$color2 + 原生 VertexLitGeneric $lightwarptexture 色相）=====
+		//
+		// 许多 Source 角色模组用同一张中性底图（如灰发 hair.vtf、共用 skin.vtf 图集）配不同的
+		// `$color2` 与 `$lightwarptexture` 来区分发色、肤色、布料冷暖与银饰明度。
+		// 忽略这两项会让紫发退化成水泥灰白、共用贴图的金属/布料塌成肤色。
+		//
+		// 三条安全边界：
+		//   1. 带 `$matcap` 的 NekoToon 材质不动（NekoToon 的 `$color` 与 `$matcap 2` 加法层配对）；
+		//   2. 底图来自外部纯贴图换色包（0 个 VMT）时不动，保留贴图包同号互换；
+		//   3. 派生贴图名按实际调色参数加确定性后缀：不同调色互不撞 id，相同调色自动共享同一张 BC7。
+		double tintR = 1.0, tintG = 1.0, tintB = 1.0;
+		if (!syntheticBase && !takesMatcapAsBase && !vmt.HasMatCap && !IsForeignPureTexturePack(rawTextureName))
+		{
+			var tintSuffix = new System.Text.StringBuilder();
+			if (vmt.WantsAdditive)
+				tintSuffix.Append("_add");
+
+			if (declaredFlatRgb is { } flatRgb
+				&& (flatRgb[0] > 0 || flatRgb[1] > 0 || flatRgb[2] > 0)
+				&& (flatRgb[0] < 255 || flatRgb[1] < 255 || flatRgb[2] < 255))
+			{
+				tintR *= flatRgb[0] / 255.0;
+				tintG *= flatRgb[1] / 255.0;
+				tintB *= flatRgb[2] / 255.0;
+				tintSuffix.Append($"_c{flatRgb[0]:x2}{flatRgb[1]:x2}{flatRgb[2]:x2}");
+			}
+
+			if (!LightwarpShadingEnabled
+				&& !vmt.WantsAdditive
+				&& vmt.Shader.Equals("VertexLitGeneric", StringComparison.OrdinalIgnoreCase)
+				&& lightwarpTexture is { Length: > 0 }
+				&& TryReadTextureRgba(lightwarpTexture, out var warpProbeRgba, out var warpProbeWidth, out var warpProbeHeight))
+			{
+				var warpChroma = MaterialAppearance.LightwarpChromaticity(warpProbeRgba, warpProbeWidth, warpProbeHeight);
+				if (Math.Min(warpChroma[0], Math.Min(warpChroma[1], warpChroma[2])) < 0.995)
+				{
+					tintR *= warpChroma[0];
+					tintG *= warpChroma[1];
+					tintB *= warpChroma[2];
+					var wr = (byte)Math.Clamp(Math.Round(warpChroma[0] * 255.0), 0, 255);
+					var wg = (byte)Math.Clamp(Math.Round(warpChroma[1] * 255.0), 0, 255);
+					var wb = (byte)Math.Clamp(Math.Round(warpChroma[2] * 255.0), 0, 255);
+					tintSuffix.Append($"_w{wr:x2}{wg:x2}{wb:x2}");
+				}
+			}
+
+			if (tintSuffix.Length > 0)
+				textureName = rawTextureName + tintSuffix;
+		}
+		else if (!syntheticBase && !takesMatcapAsBase && vmt.WantsAdditive)
+		{
+			textureName = rawTextureName + "_add";
+		}
+
 		// 发光声明。它既参与底色构造，又参与材质身份判定
 		// （`$emissiontexture` 存在时身份要带 `|emission`，否则发光变体会被合并掉）。
 		var emissionTexture = vmt.Value("$emissiontexture");
@@ -2914,9 +2999,10 @@ public sealed class SourceMaterialConverter
 			// 几何已裁过（--cutout-geometry）就不再做 alpha 测试：洞已经在网格里了，
 			// 再裁一遍等于把边啃掉，而且白白失去 advanced 的金属度。
 			// **几乎全透明**的件单独成一档：不镂空、不抖动，交给 translucent 纯色透明材质。
-			// 判据只看数据（像素占比），不看材质名。
+			// 判据只看数据（像素占比），不看材质名；`$additive` 除外（黑底必须靠 alphaclip 逐像素裁掉）。
 			fullyTransparent = !IsGeometryCut(stem)
 				&& vmt.WantsTransparency
+				&& !vmt.WantsAdditive
 				&& baseAlpha.IsEffectivelyTransparent;
 
 			// 「几乎全不透明」的件：源侧写了透明键，但 alpha 实质上是不透明的
@@ -2927,7 +3013,7 @@ public sealed class SourceMaterialConverter
 				&& !IsGeometryCut(stem))
 			{
 				notices.Add(
-					$"{stem}：源侧写了透明键（$alphatest/$translucent），但底色 {1 - baseAlpha.Coverage:P0} 的像素"
+					$"{stem}：源侧写了透明键（$alphatest/$translucent/$additive），但底色 {1 - baseAlpha.Coverage:P0} 的像素"
 					+ "是不透明的 —— 按**不透明**处理（不做镂空、也不抖动，避免出现半透明与噪点）。");
 			}
 			useAlphaClip = !fullyTransparent
@@ -2942,7 +3028,7 @@ public sealed class SourceMaterialConverter
 				//     两者拿到同一张遮罩 0xbc21456cdb7e0902，其内容逐像素等于 `Mat_ACCMetal` 的 alpha
 				//     （平均绝对差 0.0、一致 100%），而它们的底图分别是 `Mat_Metal` / `Mat_ACCMetal`。
 				//   结果就是"裁切位置和件没关系"——耳坠、月牙被打出假洞。
-				&& ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
+				&& ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest, vmt.WantsAdditive);
 
 			// 诊断：这条链上"整件消失"的每一次都只能靠猜，所以把判据的四个输入打出来。
 			// `HD2MOD_CUTOUT_DEBUG=1` 时每个材质一行（走 Console，管线可能会吞，见下）。
@@ -3040,7 +3126,7 @@ public sealed class SourceMaterialConverter
 			// **整件东西在游戏里干净地消失**，而报告里一个字都没有
 			// （实测：`二阶堂希罗` 的裙子 hirocloth2，10 张遮罩 R 均值 1、可见像素 0.47%）。
 			if (!useAlphaClip && hasSourceOpacity && vmt.WantsTransparency
-				&& !vmt.WantsAlphaTest && baseAlpha.VisibleCoverage < AlphaStats.MinimumVisibleCoverage)
+				&& !vmt.WantsAlphaTest && !vmt.WantsAdditive && baseAlpha.VisibleCoverage < AlphaStats.MinimumVisibleCoverage)
 			{
 				notices.Add(
 					$"{stem}：源侧声明了 $translucent，但底色 alpha 几乎整片透明"
@@ -3075,7 +3161,13 @@ public sealed class SourceMaterialConverter
 		// 本来就是硬裁语义，照搬是正确的 —— 所以只放行 `$alphatest`。
 		//
 		// 想恢复抖动近似：`HD2_TRANSLUCENT_CUTOUT=1`。
-		if (useAlphaClip && vmt.WantsTranslucency && !vmt.WantsAlphaTest)
+		if (useAlphaClip && vmt.WantsAdditive)
+		{
+			notices.Add(baseAlpha.IsEmpty
+				? $"{stem}：源侧声明 $additive（加法混合），且首帧贴图为全黑待机帧 —— 已按 alphaclip 全零遮罩隐藏（避免渲染成实心黑片）。"
+				: $"{stem}：源侧声明 $additive（加法混合），HD2 没有加法混合模板 —— 已将像素亮度转入 alphaclip 遮罩裁掉黑底。");
+		}
+		else if (useAlphaClip && vmt.WantsTranslucency && !vmt.WantsAlphaTest)
 		{
 			if (TranslucentCutoutEnabled)
 			{
@@ -3209,6 +3301,8 @@ public sealed class SourceMaterialConverter
 			LightwarpTexture = lightwarpTexture,
 			SelfIllumStrength = selfIllumStrength,
 			SelfIllumMaskTexture = selfIllumMaskTexture,
+			IsAdditive = vmt.WantsAdditive,
+			AlbedoTint = [tintR, tintG, tintB],
 		};
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
@@ -3218,14 +3312,16 @@ public sealed class SourceMaterialConverter
 		// 一次是最终产物。两处必须同一套规则，否则会出现"按 A 模板决定换底色、
 		// 最终却用 B 模板"这种自相矛盾的组合——那正是上一版"保留源底色却保留了球面图"的成因。
 		string ResolveTemplate(bool alphaClip)
-			=> ExperimentApplies(alphaClip)
-				? alphaExperiment switch
-				{
-					AlphaExperiment.Translucent => "translucent",
-					AlphaExperiment.AdvancedOpacity => "advanced",
-					_ => CutoutTemplateName(alphaClip),
-				}
-				: CutoutTemplateName(alphaClip);
+			=> fullyTransparent
+				? "translucent"
+				: ExperimentApplies(alphaClip)
+					? alphaExperiment switch
+					{
+						AlphaExperiment.Translucent => "translucent",
+						AlphaExperiment.AdvancedOpacity => "advanced",
+						_ => CutoutTemplateName(alphaClip),
+					}
+					: CutoutTemplateName(alphaClip);
 	}
 
 	/// <summary>
@@ -3341,6 +3437,8 @@ public sealed class SourceMaterialConverter
 		var maskNameSource = Path.GetFileNameWithoutExtension(loaded.BaseTexture);
 		if (string.IsNullOrWhiteSpace(maskNameSource))
 			maskNameSource = loaded.Stem;
+		if (loaded.IsAdditive)
+			maskNameSource += "_add";
 
 		var opacityMask = loaded.UseAlphaClip
 			? BuildOpacityMask(maskNameSource, loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight, loaded.UseDither)
@@ -3529,6 +3627,13 @@ public sealed class SourceMaterialConverter
 		}
 		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Albedo)
 			MaterialAppearance.ScaleRgb(rgba, matcapBakeGain);
+
+		if (Math.Abs(loaded.AlbedoTint[0] - 1.0) > 1e-6
+			|| Math.Abs(loaded.AlbedoTint[1] - 1.0) > 1e-6
+			|| Math.Abs(loaded.AlbedoTint[2] - 1.0) > 1e-6)
+		{
+			MaterialAppearance.MultiplyRgb(rgba, loaded.AlbedoTint);
+		}
 
 		albedoAdjustment?.Apply(rgba, vtf.Width, vtf.Height);
 
@@ -3933,21 +4038,30 @@ public sealed class SourceMaterialConverter
 		{
 			if (!source.TryReadVmt(name, out var vmtBytes) || vmtBytes.Length == 0)
 				return null;
-			var baseTexture = VmtDocument.Parse(vmtBytes).Value("$basetexture");
+			var vmt = VmtDocument.Parse(vmtBytes, source.CreateIncludeReader());
+			var baseTexture = vmt.Value("$basetexture");
 			if (string.IsNullOrWhiteSpace(baseTexture))
 				return null;
 			var stem = CutoutMesh.StemOf(baseTexture);
 			if (string.IsNullOrWhiteSpace(stem) || !source.TryReadVtf(stem, out var vtfBytes))
 				return null;
 			var vtf = VtfFile.Read(vtfBytes);
-			return (DecodeTextureCached(stem, vtfBytes, vtf), vtf.Width, vtf.Height);
+			var rgba = DecodeTextureCached(stem, vtfBytes, vtf);
+			if (vmt.WantsAdditive)
+				MaterialAppearance.ConvertAdditiveToAlpha(rgba);
+			return (rgba, vtf.Width, vtf.Height);
 		}
 		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return null;
 		}
 	}
-	public static bool ShouldUseAlphaClip(bool wantsTransparency, bool hasSourceOpacity, AlphaStats alpha, bool wantsAlphaTest = true)
+	public static bool ShouldUseAlphaClip(
+		bool wantsTransparency,
+		bool hasSourceOpacity,
+		AlphaStats alpha,
+		bool wantsAlphaTest = true,
+		bool wantsAdditive = false)
 		=> wantsTransparency
 			&& hasSourceOpacity
 			// 「几乎全不透明」的件直接判不透明：作者只是用低 alpha 当不透明写，
@@ -3959,7 +4073,10 @@ public sealed class SourceMaterialConverter
 				// 这类模组（隐藏披风 / 隐藏 NPC）的全部目的就是让东西消失，所以保留 alphaclip。
 				// 与它相对的是薄纱件（只写 `$translucent`）：那种 alpha≈0 是**数据缺失**，
 				// 走 alphaclip 会把整件裁光——见 <see cref="AlphaStats.IsEmpty"/> 里的实测事故。
-				|| (wantsAlphaTest && alpha.IsEmpty));
+				|| (wantsAlphaTest && alpha.IsEmpty)
+				// **加法混合（`$additive`）**：黑底 (0,0,0) 在源侧贡献恒为 0，不论亮部像素占 0%（待机全黑帧）
+				// 还是 2%（星点），都必须用 alphaclip 把黑底裁掉。
+				|| (wantsAdditive && alpha.Coverage >= AlphaStats.CoverageThreshold));
 
 	private SynthesizedTexture BuildOpacityMask(string textureName, byte[] rgba, int width, int height, bool ditherBySource)
 	{

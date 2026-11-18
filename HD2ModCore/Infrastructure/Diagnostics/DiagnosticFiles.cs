@@ -49,4 +49,29 @@ public static class DiagnosticFiles
 		}
 		return (Encoding.UTF8.GetString(buffer, offset, read - offset).TrimStart('\uFEFF'), length > maxBytes || read != endOfRead);
 	}
+
+	public static string? SelectNewestExistingPath(params string?[] candidates)
+	{
+		string? fallback = null;
+		string? bestPath = null;
+		var bestTime = DateTime.MinValue;
+		foreach (var candidate in candidates)
+		{
+			if (string.IsNullOrWhiteSpace(candidate)) continue;
+			fallback ??= candidate;
+			try
+			{
+				var info = new FileInfo(candidate);
+				if (!info.Exists) continue;
+				var modified = info.LastWriteTimeUtc;
+				if (bestPath is null || modified > bestTime)
+				{
+					bestPath = candidate;
+					bestTime = modified;
+				}
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+		}
+		return bestPath ?? fallback;
+	}
 }

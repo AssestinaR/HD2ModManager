@@ -377,6 +377,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				// （件表直接写成目标件集，没有"来源缺槽"的问题）。
 				if (mappingsEnabled && EffectiveMappingMode.UsesRuntimeLua())
 				{
+					if (materialize)
+						RuntimeArmorRegistryService.EnsureSiblingLogsDirectory(_armorRegistry.RegistryRoot);
 					if (EffectiveMappingMode == ArmorMappingMode.ExternalLuaEntry)
 					{
 						// 外置入口：运行时 + 隐藏 unit 打包成一个独立补丁，管理器不碰 boot。

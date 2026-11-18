@@ -31,14 +31,18 @@ local SET_BUDGET_PER_TICK = 32
 local PROTOCOL_NAME = 'wardrobe.links'
 local SEAF_ROOT_UNIT = '75f7e96af7dcd303'
 
+-- 协议目录与加载器日志目录解耦：MDL3 默认安装到 ProgramData 时会把
+-- CowboyBingusModLoader.log_directory 指到 C:/ProgramData/CowboyBingus/Helldivers2/Logs，
+-- 但管理器始终把 wardrobe.links 写在真实 %LOCALAPPDATA%/CowboyBingus/Helldivers2/ArmorRegistry。
 local function base_directory()
-	local loader = rawget(_G, 'CowboyBingusModLoader')
-	if type(loader) == 'table' and type(loader.log_directory) == 'string' then
-		return loader.log_directory:gsub('[/\\]Logs$', '')
-	end
-	local local_app_data = os.getenv('LOCALAPPDATA')
-	if type(local_app_data) == 'string' and local_app_data ~= '' then
+	local local_app_data = type(os) == 'table' and type(os.getenv) == 'function'
+		and os.getenv('LOCALAPPDATA') or nil
+	if type(local_app_data) == 'string' and local_app_data ~= '' and not local_app_data:find('?', 1, true) then
 		return local_app_data .. '/CowboyBingus/Helldivers2'
+	end
+	local loader = rawget(_G, 'CowboyBingusModLoader')
+	if type(loader) == 'table' and type(loader.log_directory) == 'string' and loader.log_directory ~= '' then
+		return (loader.log_directory:gsub('[/\\]Logs$', ''))
 	end
 	return nil
 end
@@ -46,12 +50,26 @@ end
 local base = base_directory()
 local protocol_path = base and (base .. '/ArmorRegistry/' .. PROTOCOL_NAME) or nil
 local log_path = base and (base .. '/Logs/ArmorOverrideRuntime.log') or nil
+local log_handle = nil
+do
+	local loader = rawget(_G, 'CowboyBingusModLoader')
+	if type(loader) == 'table' and rawget(loader, 'api') == 1 and type(rawget(loader, 'open_log')) == 'function' then
+		local opened, file = pcall(loader.open_log, 'ArmorOverrideRuntime.log')
+		if opened and file then log_handle = file end
+	end
+end
 
 local function log(text)
+	local line = tostring(text) .. '\n'
+	if log_handle ~= nil then
+		pcall(log_handle.write, log_handle, line)
+		if type(log_handle.flush) == 'function' then pcall(log_handle.flush, log_handle) end
+		return
+	end
 	if log_path == nil or type(io) ~= 'table' or not io.open then return end
 	local ok, file = pcall(io.open, log_path, 'ab')
 	if ok and file then
-		pcall(file.write, file, tostring(text) .. '\n')
+		pcall(file.write, file, line)
 		pcall(file.close, file)
 	end
 end
@@ -207,7 +225,7 @@ local function poll()
 	end
 end
 
-log('runtime loaded; protocol=' .. tostring(protocol_path))
+log('runtime loaded; version=1.1.0 protocol=' .. tostring(protocol_path))
 
 -- 只在「前一个 update 正是按实例隐藏 Hider 装上的钩子」时才接着调用它：
 -- 外置 addon 模式下 Hider 可能先于本运行时加载，整体替换会把它静默顶掉。

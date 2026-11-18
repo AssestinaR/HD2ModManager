@@ -713,7 +713,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var outcome = await ModCompileService.CompileAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				SettingsService.CreateVpkHostContext(),
+				SettingsService.CreateVpkHostContext(node.Metadata.Name),
 				[target.ArchiveId],
 				_vpkFile.State.Disabled,
 				Report,
@@ -725,6 +725,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				SetVpkStatus(error, NotificationLevel.Error, 20);
 				return;
 			}
+
+			ApplyCompilerUpdatedDisabledSections(outcome.UpdatedDisabledSections);
 
 			// 两种结果的说法必须不同：退回来源不是"换甲成功"，它压根没搬运几何。
 			var rekey = outcome.Rekey;
@@ -922,7 +924,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var outcome = await ModCompileService.CompileAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				SettingsService.CreateVpkHostContext(),
+				SettingsService.CreateVpkHostContext(node.Metadata.Name),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
@@ -934,6 +936,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				VpkComponentStatus = error;
 				return;
 			}
+
+			ApplyCompilerUpdatedDisabledSections(outcome.UpdatedDisabledSections);
 
 			task?.SetOutputArtifacts(directory, null);
 			task?.MarkCompleted();
@@ -1037,7 +1041,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var outcome = await ModCompileService.CompileAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				SettingsService.CreateVpkHostContext(),
+				SettingsService.CreateVpkHostContext(node.Metadata.Name),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
@@ -1051,6 +1055,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				SetVpkStatus(error, NotificationLevel.Error, 20);
 				return;
 			}
+
+			ApplyCompilerUpdatedDisabledSections(outcome.UpdatedDisabledSections);
 
 			// 说什么由**实际结果**决定，而不是由开关状态决定。
 			// 开关打开却什么也没合并（目标是自己素体 / 目标胸部只有一层 / 没有配套头盔）时，
@@ -1323,6 +1329,19 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			return false;
 		return !group.Members.All(target =>
 			target.Sections.All(section => _vpkFile.State.IsDisabled(target.Unit, section)));
+	}
+
+	private void ApplyCompilerUpdatedDisabledSections(IReadOnlyDictionary<string, IReadOnlyCollection<int>>? updatedDisabled)
+	{
+		if (updatedDisabled is null) return;
+		_vpkFile = _vpkFile with
+		{
+			ComponentTreeEnabled = true,
+			State = new VpkWardrobeState(updatedDisabled),
+		};
+		VpkTree?.RefreshChecks();
+		foreach (var item in _vpkGroups)
+			item.RaiseEnabledChanged();
 	}
 
 	private void WriteGroup(SectionGroup group, bool enabled)

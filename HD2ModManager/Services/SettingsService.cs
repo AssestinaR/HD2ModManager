@@ -689,9 +689,14 @@ namespace HD2ModManager.Services
             catch { return false; }
         }
 
-        /// <summary>编译/重构建要用的宿主上下文：游戏 data 目录、存储路径，以及全局的「低污染模式」。</summary>
-        public static VpkHostContext CreateVpkHostContext()
-            => new(GetGameDataFolder(), CreateStoragePaths()) { LowPollutionMode = GetEffectiveLowPollutionMode() };
+        /// <summary>编译/重构建要用的宿主上下文：游戏 data 目录、存储路径，以及全局的「低污染模式」与 128 MiB 超限交互弹窗。</summary>
+        public static VpkHostContext CreateVpkHostContext(string? modDisplayName = null)
+            => new(GetGameDataFolder(), CreateStoragePaths())
+            {
+                LowPollutionMode = GetEffectiveLowPollutionMode(),
+                ModDisplayName = modDisplayName,
+                OnMergeOverflow = (overflowContext, _) => Views.MergeOverflowDialogWindow.PromptAsync(overflowContext),
+            };
 
         public static string GetModLibraryFolder()
         {

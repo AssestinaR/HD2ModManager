@@ -233,6 +233,27 @@ public sealed class CanonicalUnitRebuilderTests
 		Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "SerializationFailed");
 	}
 
+	[Fact]
+	public void Rebuild_FailsClosedWhenSingleStreamVertexBufferReachesD3D12BlockLimit()
+	{
+		const uint stride = 1024u * 1024u;
+		var target = Target(meshCount: 1) with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0, 1, 0, 0, stride, 0, 3, 0, 0, 0, 0, 0,
+				[new(0, "position", 0, "vec3_float", 0, 0, 12)])]
+		};
+		var vertices = Enumerable.Range(0, 128)
+			.Select(index => new UnitRawVertexRecord((uint)index, [1, 2, 3, 4], []))
+			.ToArray();
+		var triangle = new UnitTriangleIndices(0, 1, 2);
+		var raw = new UnitRawMeshData(0, 100, 0, 0, [new(0, 10, [triangle])], [triangle], vertices);
+
+		var result = new CanonicalUnitRebuilder().TryRebuild(target, Toc(target), [raw]);
+
+		Assert.False(result.IsValid);
+		Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == CanonicalUnitRebuilder.StreamBufferLimitDiagnosticCode);
+	}
+
 	private static UnitMeshModel Target(int meshCount)
 	{
 		var meshes = Enumerable.Range(0, meshCount).Select(index => new UnitMeshInfo(

@@ -136,7 +136,17 @@ public sealed class VmtDocument
 	/// <see cref="WantsAlphaTest"/> 与 <see cref="WantsTranslucency"/>。
 	/// </para>
 	/// </summary>
-	public bool WantsTransparency => WantsAlphaTest || WantsTranslucency;
+	public bool WantsTransparency => WantsAlphaTest || WantsTranslucency || WantsAdditive;
+
+	/// <summary>
+	/// <c>$additive 1</c>：<b>加法混合</b>（<c>dst + src</c>）。
+	/// <para>
+	/// 在源侧黑色像素 <c>(0,0,0)</c> 贡献为 0（完全透明），常用于宝石星芒、闪光动画精灵与表情光效。
+	/// HD2 没有加法混合材质模板，因此需将像素亮度转为遮罩不透明度走 <c>alphaclip</c> 裁掉黑底，
+	/// 否则黑底（或第 0 帧全黑待机帧）会渲染成实心黑方块。
+	/// </para>
+	/// </summary>
+	public bool WantsAdditive => IsEnabled("$additive");
 
 	/// <summary>
 	/// <c>$alphatest 1</c>：<b>硬裁</b>（alpha 低于参考值就丢弃像素）。
@@ -190,7 +200,7 @@ public sealed class VmtDocument
 	/// Source 的 <c>$alphatest</c> 就是"低于参考值直接丢弃"。
 	/// </para>
 	/// </summary>
-	public bool WantsDitheredTransparency => WantsTranslucency || WantsAlphaToCoverage;
+	public bool WantsDitheredTransparency => WantsTranslucency || WantsAlphaToCoverage || (WantsAdditive && !WantsAlphaTest);
 
 	public string? Value(string key) => values.GetValueOrDefault(key.ToLowerInvariant());
 
@@ -373,7 +383,7 @@ public sealed class VmtDocument
 	{
 		foreach (var pair in source.ToArray())
 		{
-			if (pair.Key is "$basetexture" or "$bumpmap" or "$matcaptexture" or "$matcap2texture" or "$emissiontexture")
+			if (pair.Key is "$basetexture" or "$bumpmap" or "$matcaptexture" or "$matcap2texture" or "$emissiontexture" or "$lightwarptexture")
 				source[pair.Key] = NormalizePath(pair.Value);
 		}
 

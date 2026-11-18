@@ -62,6 +62,24 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		return await ImportUnitsAsync(units, cancellationToken).ConfigureAwait(false);
 	}
 
+	public async ValueTask<ImportResult> ImportLibraryResidentFolderAsync(
+		string folderPath,
+		bool preferHardLinks,
+		Action<IReadOnlyList<ModNodeId>>? onUnitCommitted = null,
+		CancellationToken cancellationToken = default)
+	{
+		var full = Path.GetFullPath(folderPath);
+		if (!Directory.Exists(full))
+		{
+			throw new DirectoryNotFoundException(full);
+		}
+
+		var units = await DiscoverFolderUnitsAsync(full, cancellationToken, rootDisplayName: null, preferHardLinks).ConfigureAwait(false);
+		if (units.Count == 0)
+			throw new InvalidDataException("所选文件夹里没有可导入的内容（没有 patch，也没有 ReShade 文件）。");
+		return await ImportUnitsAsync(units, cancellationToken, onUnitCommitted).ConfigureAwait(false);
+	}
+
 	public async ValueTask<ImportResult> ImportArchiveAsync(string archiveFilePath, CancellationToken cancellationToken = default)
 	{
 		var full = Path.GetFullPath(archiveFilePath);
@@ -104,11 +122,15 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 	}
 
-	private async ValueTask<ImportResult> ImportUnitsAsync(IReadOnlyList<ImportSourceUnit> units, CancellationToken cancellationToken)
+	private async ValueTask<ImportResult> ImportUnitsAsync(
+		IReadOnlyList<ImportSourceUnit> units,
+		CancellationToken cancellationToken,
+		Action<IReadOnlyList<ModNodeId>>? onUnitCommitted = null)
 	{
 		ImportedObjectTree? firstStoredTree = null;
 		LibrarySnapshot? latestSnapshot = null;
 		var optionPathConflicts = new List<OptionPathConflict>();
+		var unownedPayloadPaths = new List<string>();
 		var importedNodeIds = new List<ModNodeId>();
 		var cacheInvalidationFailedNodeIds = new List<ModNodeId>();
 		var conflictRemappedNodeIds = new List<ModNodeId>();
@@ -128,6 +150,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				planned = remapped.Tree;
 				conflictRemappedNodeIds.AddRange(remapped.RemappedNodeIds);
 				optionPathConflicts.AddRange(planned.OptionPathConflicts);
+				unownedPayloadPaths.AddRange(planned.UnownedPayloadPaths);
 				var (storedTree, snapshot, invalidationFailures) = await CommitImportAsync(
 					planned,
 					unit.SourceRoot,
@@ -140,6 +163,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				latestSnapshot = snapshot;
 				importedNodeIds.AddRange(storedTree.Nodes.Keys);
 				cacheInvalidationFailedNodeIds.AddRange(invalidationFailures);
+				// 逐个单元回调：多单元导入是**逐单元提交**的，第二个单元失败时第一个已经在库里了。
+				// 没有这一步，调用方无从知道「这次失败其实留下了一半」，回滚也就无从谈起。
+				onUnitCommitted?.Invoke(storedTree.Nodes.Keys.ToArray());
 			}
 			finally
 			{
@@ -172,6 +198,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			CacheInvalidationStatus = cacheInvalidationStatus,
 			CacheInvalidationFailedNodeIds = distinctCacheFailures,
 			ConflictRemappedNodeIds = conflictRemappedNodeIds.Distinct().ToArray(),
+			UnownedPayloadPaths = unownedPayloadPaths
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToArray(),
 		};
 	}
 
@@ -246,21 +275,22 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	private async ValueTask<IReadOnlyList<ImportSourceUnit>> DiscoverFolderUnitsAsync(
 		string root,
 		CancellationToken cancellationToken,
-		string? rootDisplayName = null)
+		string? rootDisplayName = null,
+		bool preferHardLinks = false)
 	{
 		var packageRoot = ResolvePackageRoot(root);
 		// A manifest owns its complete package tree. Nested archives are then just
 		// package files, not separate user-selected imports.
 		if (packageRoot.Manifest is not null)
 		{
-			return [new ImportSourceUnit(packageRoot.Directory, rootDisplayName ?? new DirectoryInfo(root).Name, false, packageRoot.Manifest)];
+			return [new ImportSourceUnit(packageRoot.Directory, rootDisplayName ?? new DirectoryInfo(root).Name, preferHardLinks, packageRoot.Manifest)];
 		}
 
 		var units = new List<ImportSourceUnit>();
 		var directTree = await _folderImporter.ImportFolderAsync(root, cancellationToken).ConfigureAwait(false);
 		if (ContainsImportablePayload(directTree, root))
 		{
-			units.Add(new ImportSourceUnit(root, rootDisplayName ?? new DirectoryInfo(root).Name, false, null));
+			units.Add(new ImportSourceUnit(root, rootDisplayName ?? new DirectoryInfo(root).Name, preferHardLinks, null));
 		}
 
 		foreach (var archive in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
@@ -327,6 +357,66 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			}
 			catch { }
 		}
+	}
+
+	/// <summary>
+	/// 回滚一次**未完成的**导入已经落库的节点：删目录、失效缓存、从快照里摘掉。
+	/// <para>
+	/// <b>顺序是有讲究的：先删目录，删不动就抛，绝不先改快照。</b>反过来的话，目录还在而
+	/// 快照里没有对应节点，下一轮重扫会把它当成「外部新增」重新收进来——正是回滚要避免的重复。
+	/// 抛出去之后调用方会保留认领标记，下一轮再试一次。
+	/// </para>
+	/// <para>
+	/// 不走 <see cref="ModStorageDeletionService"/>：那条路会登记待删墓碑并进入对账排除集，
+	/// 语义是「用户要删掉一个 Mod」。这里的意思是「这次导入没有发生」。
+	/// </para>
+	/// </summary>
+	public async ValueTask RollbackImportAsync(
+		IReadOnlyCollection<ModNodeId> nodeIds,
+		CancellationToken cancellationToken = default)
+	{
+		if (nodeIds is null || nodeIds.Count == 0) return;
+		var removing = nodeIds.ToHashSet();
+		var current = await _store.TryLoadAsync(cancellationToken).ConfigureAwait(false);
+		if (current is null) return;
+
+		foreach (var nodeId in removing)
+		{
+			if (!current.Nodes.TryGetValue(nodeId, out var node)) continue;
+			var directory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
+			if (!Directory.Exists(directory)) continue;
+			SetReadOnlyRecursive(directory, readOnly: false);
+			Directory.Delete(directory, recursive: true);
+		}
+
+		foreach (var nodeId in removing)
+		{
+			_informationReader?.InvalidateNode(nodeId);
+			if (_informationCenter is not null)
+				await _informationCenter.InvalidateNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(false);
+			else if (_legacyCleanup is not null)
+				await _legacyCleanup.DeleteAsync(nodeId).ConfigureAwait(false);
+		}
+
+		var nodes = new Dictionary<ModNodeId, ModNode>();
+		foreach (var kvp in current.Nodes)
+		{
+			if (removing.Contains(kvp.Key)) continue;
+			var children = kvp.Value.Children;
+			// 子节点被摘掉后，父节点的 Children 里不能留下悬空 id：详情页会照着它建树。
+			nodes[kvp.Key] = children.Count != 0 && children.Any(removing.Contains)
+				? kvp.Value with { Children = children.Where(id => !removing.Contains(id)).ToArray() }
+				: kvp.Value;
+		}
+
+		await _store.SaveAsync(
+			new LibrarySnapshot(
+				Version: current.Version,
+				SavedUtc: DateTimeOffset.UtcNow,
+				Nodes: nodes,
+				Profiles: current.Profiles,
+				ActiveProfileId: current.ActiveProfileId),
+			cancellationToken).ConfigureAwait(false);
 	}
 
 	private void NormalizePatchDirectories(string rootDirectory, CancellationToken cancellationToken)
@@ -609,6 +699,10 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			_ => new List<ModNode>(),
 			StringComparer.OrdinalIgnoreCase);
 		var conflictingPayloadNodes = new List<ManifestPayloadConflict>();
+		// manifest 没有声明的 payload 目录。作者漏写一个选项是常见的（实测
+		// milltina 修女 的「腰裙」就是），而每个这样的目录都是真内容：丢掉它等于
+		// 静默少装一部分，游戏里表现成「缺件」且没有任何提示。
+		var unownedPayloadNodes = new List<ModNode>();
 		foreach (var sourceNode in tree.Nodes.Values
 
 			.Where(node => node.PatchGroups.Count > 0)
@@ -616,13 +710,23 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		{
 			var sourcePath = NormalizeRelativePath(sourceNode.RelativePath);
 			var owners = FindManifestEntriesForSourcePath(entries, sourcePath);
-			if (owners.Count == 1 && owners[0].Kind == ModNodeKind.Option)
+			if (owners.Count == 1)
 			{
-				ownedPayloadNodes[owners[0].Key].Add(sourceNode);
+				if (owners[0].Kind == ModNodeKind.Option)
+				{
+					ownedPayloadNodes[owners[0].Key].Add(sourceNode);
+					continue;
+				}
+				// 唯一的 owner 是 root 条目（相对路径为空）：根上的 patch 已经由
+				// rootCandidate 自己带着了，再建一个节点就是同一批 patch 部署两次。
 				continue;
 			}
 			if (owners.Count > 1)
+			{
 				conflictingPayloadNodes.Add(new ManifestPayloadConflict(sourceNode, sourcePath, owners));
+				continue;
+			}
+			unownedPayloadNodes.Add(sourceNode);
 		}
 		// A repeated Include changes the physical meaning of the whole manifest.
 		// Logical manifest entries must remain relationship-only nodes; every
@@ -694,6 +798,42 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			sourcePaths[optionId] = compatibilityMode ? Array.Empty<string>() : paths;
 		}
 
+		// manifest 没声明的 payload 目录：收成 root 的直属选项，**不丢**。
+		//
+		// 为什么不单独做成 Standard 节点：这些目录本来就在同一个包里，拆成独立 Mod
+		// 会让「一个包 = 一个 Mod + 它的部件」这个结构断掉（用户在详情页看不到它们属于谁）。
+		// 也不放进 compatibility 分支：那种模式下所有 payload 目录已经各自成节点了，
+		// 再收一遍就是同一批 patch 被部署两次。
+		if (!compatibilityMode)
+		{
+			var nextOptionOrder = (optionEntries.Select(entry => entry.OptionOrder).DefaultIfEmpty(-1).Max() ?? -1) + 1;
+			for (var index = 0; index < unownedPayloadNodes.Count; index++)
+			{
+				var source = unownedPayloadNodes[index];
+				var sourcePath = NormalizeRelativePath(source.RelativePath);
+				var unownedId = new ModNodeId(CreateStableNodeGuid(
+					manifest.Guid ?? rootId.Value.ToString("N"),
+					$"unowned:{sourcePath}"));
+				var leaf = Path.GetFileName(sourcePath.Replace('/', Path.DirectorySeparatorChar));
+				nodes[unownedId] = new ModNode(
+					unownedId,
+					sourcePath,
+					new ModNodeMetadata(
+						string.IsNullOrWhiteSpace(leaf) ? sourcePath : leaf,
+						"manifest 没有声明这个目录，已按包内实际内容收为选项。",
+						source.Metadata.CreatedUtc,
+						source.Metadata.ModifiedUtc,
+						ModNodeKind.Option,
+						[rootId.Value.ToString("N")],
+						manifest.Guid,
+						sourcePath,
+						nextOptionOrder + index),
+					source.PatchGroups,
+					Array.Empty<ModNodeId>());
+				sourcePaths[unownedId] = [sourcePath];
+			}
+		}
+
 		var physicalPayloadNodes = compatibilityMode
 			? tree.Nodes.Values
 	
@@ -742,6 +882,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				.Select(conflict => new OptionPathConflict(
 					conflict.SourceRelativePath,
 					conflict.Owners.Select(entry => entryIds[entry.Key]).Distinct().ToArray()))
+				.ToArray(),
+			UnownedPayloadPaths = unownedPayloadNodes
+				.Select(node => NormalizeRelativePath(node.RelativePath))
 				.ToArray(),
 		};
 	}
@@ -1052,6 +1195,12 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		public bool RequiresVirtualReferences { get; init; }
 		public IReadOnlyList<OptionPathConflict> OptionPathConflicts { get; init; } = Array.Empty<OptionPathConflict>();
 		public bool HasOptionPathConflicts => OptionPathConflicts.Count > 0;
+
+		/// <summary>
+		/// manifest 没声明、但包里有实际 payload 的目录。它们已经被收成 root 的直属选项，
+		/// 这里只是把路径交出去供调用方告警——**不是**丢弃清单。
+		/// </summary>
+		public IReadOnlyList<string> UnownedPayloadPaths { get; init; } = Array.Empty<string>();
 	}
 
 	internal sealed record PackageRoot(string Directory, StandardModManifest? Manifest);
