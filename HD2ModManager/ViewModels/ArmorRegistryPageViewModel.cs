@@ -1750,6 +1750,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		foreach (var mapping in Mappings)
 			mappedSourceByTarget.TryAdd(mapping.Target.ItemId, mapping.Source);
 
+		// 每个来源名下有几个目标：行上要写"视觉来源 · n 个目标"，n 跟着映射变。
+		var targetCountBySource = new Dictionary<uint, int>();
+		foreach (var mapping in Mappings)
+			targetCountBySource[mapping.Source.ItemId] = targetCountBySource.GetValueOrDefault(mapping.Source.ItemId) + 1;
+
 		foreach (var tab in PickerTabOrder)
 		{
 			foreach (var row in availableChoicesByTab.GetValueOrDefault(tab) ?? [])
@@ -1763,7 +1768,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					break;
 				}
 
-				row.ApplyOccupancy(isSource, mappedSource?.SelectionKey, mappedSource?.Name);
+				var targetCount = row.MemberItemIds.Sum(memberId => targetCountBySource.GetValueOrDefault(memberId));
+				row.ApplyOccupancy(isSource, targetCount, mappedSource?.SelectionKey, mappedSource?.Name);
 			}
 		}
 	}
@@ -2783,15 +2789,41 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public bool IsSelected { get => isSelected; set => SetField(ref isSelected, value); }
 	public ModListRowPresentation RowPresentation { get => rowPresentation; private set => SetField(ref rowPresentation, value); }
 
-	public void ApplyOccupancy(bool isSource, string? providerKey, string? providerName)
+	private int sourceTargetCount;
+
+	/// <summary>
+	/// 记下这一行的占用状态，并把它写进行摘要那一条补充说明里。
+	/// 为什么放在内存里临时算：这些行默认是隐藏的，只有点亮「已映射」才看得见；
+	/// 而状态来源（来源表 + 映射）本来就每次刷新都在手上，落盘或另建索引都是多余的。
+	/// </summary>
+	public void ApplyOccupancy(bool isSource, int sourceTargetCount, string? providerKey, string? providerName)
 	{
-		if (IsSource == isSource && string.Equals(MappedProviderKey, providerKey, StringComparison.Ordinal)) return;
+		var label = BuildOccupancyLabel(isSource, sourceTargetCount, providerName);
+		var tone = providerKey is not null ? ModListRowTone.Accent : ModListRowTone.Success;
+		if (IsSource == isSource
+			&& this.sourceTargetCount == sourceTargetCount
+			&& string.Equals(MappedProviderKey, providerKey, StringComparison.Ordinal)
+			&& string.Equals(RowPresentation.OccupancyLabel, label, StringComparison.Ordinal))
+			return;
+
 		IsSource = isSource;
+		this.sourceTargetCount = sourceTargetCount;
 		MappedProviderKey = providerKey;
 		MappedProviderName = providerName;
+		RowPresentation = RowPresentation with { OccupancyLabel = label, OccupancyTone = tone };
 		OnPropertyChanged(nameof(IsSource));
 		OnPropertyChanged(nameof(IsMapped));
 		OnPropertyChanged(nameof(IsHidden));
+	}
+
+	private static string? BuildOccupancyLabel(bool isSource, int targetCount, string? providerName)
+	{
+		var hasProvider = !string.IsNullOrWhiteSpace(providerName);
+		if (!isSource && !hasProvider) return null;
+
+		var sourceText = targetCount == 0 ? "视觉来源 · 尚无映射目标" : $"视觉来源 · {targetCount} 个目标";
+		if (isSource && hasProvider) return $"{sourceText} · 已映射到：{providerName}";
+		return isSource ? sourceText : $"已映射到：{providerName}";
 	}
 
 

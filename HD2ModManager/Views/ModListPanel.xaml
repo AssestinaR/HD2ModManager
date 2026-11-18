@@ -176,6 +176,7 @@
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0"
@@ -202,7 +203,17 @@
                                                    FontSize="12"
                                                    Margin="0,0,7,0"
                                                    Visibility="{Binding RowPresentation.HasWarning, Converter={StaticResource BoolToVis}}"/>
+                                        <!-- 行状态补充说明（护甲映射页：视觉来源 / 已映射到 X）。单独一格，
+                                             不和 Summary（孪生）与 Note（低污染）抢位置。 -->
                                         <TextBlock Grid.Column="4"
+                                                   Text="{Binding RowPresentation.OccupancyLabel}"
+                                                   Foreground="{Binding RowPresentation.OccupancyTone, Converter={StaticResource RowToneBrush}}"
+                                                   FontSize="12"
+                                                   Margin="0,0,7,0"
+                                                   TextWrapping="NoWrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Visibility="{Binding RowPresentation.HasOccupancy, Converter={StaticResource BoolToVis}}"/>
+                                        <TextBlock Grid.Column="5"
                                                    Text="{Binding RowPresentation.Summary}"
                                                    Foreground="{StaticResource TextSecondary}"
                                                    FontSize="12"
@@ -212,7 +223,7 @@
                                                    TextWrapping="NoWrap"
                                                    TextTrimming="CharacterEllipsis"
                                                    Visibility="{Binding RowPresentation.HasSummary, Converter={StaticResource BoolToVis}}"/>
-                                        <TextBlock Grid.Column="5"
+                                        <TextBlock Grid.Column="6"
                                                    Text="{Binding RowPresentation.Note}"
                                                    Foreground="{StaticResource TextSecondary}"
                                                    FontSize="12"
