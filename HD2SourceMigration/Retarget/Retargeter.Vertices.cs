@@ -75,11 +75,23 @@ public sealed partial class Retargeter
 	/// s = dot(v - SH, u)         u = (EL - SH)/|EL - SH|,  L = |EL - SH|
 	/// f = clamp(s / L, 0, 1)     线性斜坡 → 均匀轴向拉伸
 	/// f[distal] = 1              小臂/手/手指：刚性平移
-	/// f[关节靠躯干一侧] = 0       只有肩关节<b>内侧</b>的东西不动
+	/// f[非本侧手臂] = 0           躯干、腿、另一只手臂、披风：一律不动
 	/// </code>
-	/// 最后一行刻意是"在关节内侧"，而不是"分区没认领的一切"：<c>source_extra_78</c> 是挂在<b>手</b>上的
-	/// 辅助骨，它的顶点在手臂上但主骨分区叫不出名字。把它们钉住会让邻居整体移动一个补偿量而它们不动，
-	/// 外壳直接撕开（实测 5 cm 跳变）。
+	/// <para>
+	/// <b>为什么非手臂顶点必须整体钉住，而不是只钉"肩关节内侧"。</b>旧规则是
+	/// <c>!arm &amp;&amp; along &lt;= 0 ⇒ 0</c>，其余照样走斜坡。它只在源模型是 <b>T-pose</b> 时成立——
+	/// 那时上臂轴水平朝外，肩外侧只有手臂。源模型是 <b>A-pose</b>（上臂下垂 36°–57°）时，
+	/// 上臂轴斜向下，脚、腿、髋都落在 <c>along ≥ L</c> 一侧，被当成"肘以外"整体平移了
+	/// 一个补偿量；左右两遍水平分量抵消、竖直分量叠加。
+	/// 实测（2026-11-21，本机 11 个 L4D2 人物 mod）：5 个 A-pose 源的脚底被额外压下 12–18 cm
+	/// （发货 soleZ −0.21 … −0.27，T-pose 源都是 −0.09），一一对应，无一例外。
+	/// </para>
+	/// <para>
+	/// 当初不敢"钉住分区没认领的一切"，是因为 <c>source_extra_78</c>（挂在<b>手</b>上的辅助骨）
+	/// 叫不出名字、会被钉住而撕开外壳（实测 5 cm 跳变）。那件事现在由
+	/// <see cref="SourceArmBones.Classify"/> 的<b>沿祖先上溯</b>解决：它会被认成手，走 <c>distal</c>，
+	/// 所以这里可以放心把真正的非手臂顶点全部钉住。
+	/// </para>
 	/// </summary>
 	private (double[] Field, bool[] Upper, bool[] Distal, bool[] Arm) ArmStretchField(
 		IReadOnlyList<Vec3> points, string side, Vec3 shoulder, Vec3 elbow)
@@ -98,12 +110,62 @@ public sealed partial class Retargeter
 			var value = RetargetMath.Clamp(along / length, 0, 1);
 			if (distal[i])
 				value = 1.0;
-			else if (!arm[i] && along <= 0.0)
-				value = 0.0;
+			else if (!arm[i])
+				value = NonArmStretch(value, along, ArmInfluence(i, side), PointSegmentDistance(points[i], shoulder, elbow));
 			field[i] = value;
 		}
 
 		return (field, upper, distal, arm);
+	}
+
+	/// <summary>
+	/// 顶点挂在<b>本侧手臂</b>上的权重之和（0–1）。非手臂顶点的拉伸斜坡要乘上它。
+	/// <para>
+	/// 乘它而不是直接置 0，是因为腋下/肩缝的皮肤主骨是 <c>Spine2</c>/<c>Spine4</c>，却带着一部分
+	/// <c>UpperArm</c> 权重、和上臂顶点共边。直接钉死它们会把肩缝撕开（实测 2026-11-21：
+	/// 某 A-pose 转换模型腋下边被拉到源边长的 111 倍）。按权重给，接缝随手臂走，没有手臂权重的
+	/// 脚、腿、髋则是 0。
+	/// </para>
+	/// </summary>
+	/// <summary>
+	/// 非手臂顶点离上臂段（肩→肘）够近时，也跟着拉伸走：距离 ≤ <see cref="SeamNear"/> 给 1，
+	/// ≥ <see cref="SeamFar"/> 给 0，中间 smoothstep。
+	/// <para>
+	/// 只靠 <see cref="ArmInfluence"/> 不够：A-pose 源的腋下有一圈<b>纯脊柱权重</b>的顶点直接和上臂顶点共边，
+	/// 权重为 0 就被钉住，肩缝仍会撕开（实测两个 A-pose 转换模型腋下边分别 20×、53×）。
+	/// 腿、髋离上臂段都在 0.2 m 以上，所以这段近距离羽化不会把下半身再拖下去。
+	/// </para>
+	/// </summary>
+	/// <summary>
+	/// 非本侧手臂顶点的拉伸系数：肩关节内侧为 0，其余为斜坡值 ×
+	/// max(本侧手臂权重, 离上臂段的近距离羽化)。抽成纯函数是为了能脱离真实模型单测。
+	/// </summary>
+	internal static double NonArmStretch(double ramp, double along, double armInfluence, double distanceToUpperArm) =>
+		along <= 0.0 ? 0.0 : ramp * Math.Max(armInfluence, SeamProximity(distanceToUpperArm));
+
+	private static double SeamProximity(double distance)
+	{
+		var t = RetargetMath.Clamp((SeamFar - distance) / (SeamFar - SeamNear), 0, 1);
+		return t * t * (3.0 - (2.0 * t));
+	}
+
+	private const double SeamNear = 0.04;
+	private const double SeamFar = 0.12;
+
+	private double ArmInfluence(int vertexIndex, string side)
+	{
+		var weights = _weights[vertexIndex];
+		var bones = _boneIndices[vertexIndex];
+		var sum = 0.0;
+		for (var j = 0; j < weights.Length; j++)
+		{
+			if (weights[j] <= 0.0 || bones[j] < 0 || bones[j] >= _sourceNames.Length)
+				continue;
+			if (SourceArmBones.IsArm(ClassifyArmBone(bones[j], side)))
+				sum += weights[j];
+		}
+
+		return RetargetMath.Clamp(sum, 0, 1);
 	}
 
 	/// <summary>
