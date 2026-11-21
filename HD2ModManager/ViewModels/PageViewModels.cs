@@ -2071,6 +2071,20 @@ namespace HD2ModManager.ViewModels
             + $"默认 {SettingsService.DefaultHeadScale:0.####}（8/7，现行比例）。"
             + "只影响 VPK 构建出的角色网格：头围绕颈/头接缝等比缩放，不碰材质与 id。";
 
+        /// <summary>
+        /// VPK 构建时的腿部重拟合：只压缩腿（主要是小腿）让脚回到地面，髋以上、手、头不动。
+        /// 与头部缩放同一类全局几何参数：对已有 Mod 要重构建才生效。
+        /// </summary>
+        public bool LegRefit
+        {
+            get => SettingsService.GetLegRefit();
+            set
+            {
+                SettingsService.SetLegRefit(value);
+                OnPropertyChanged(nameof(LegRefit));
+            }
+        }
+
 
         public RelayCommand OpenModFolderCommand { get; }
         public RelayCommand ResetModFolderCommand { get; }
@@ -2292,6 +2306,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(DefaultExportPath));
             OnPropertyChanged(nameof(HeadScaleText));
             OnPropertyChanged(nameof(HeadScaleHint));
+            OnPropertyChanged(nameof(LegRefit));
             _ = RefreshAssetIndexStatusAsync();
         }
 

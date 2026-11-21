@@ -109,6 +109,13 @@ public static class VpkRebuildService
 	/// </summary>
 	public static double? HeadScale { get; set; }
 
+	/// <summary>
+	/// 全局几何参数：腿部重拟合（压缩腿让脚回到地面，见 <c>RetargetOptions.LegRefit</c>）。
+	/// <c>null</c> = 不给，转换器用自己的默认值（关）。与 <see cref="HeadScale"/> 同一套口径：
+	/// 不进产物记录，由管理器在启动与设置变更时写入，改了设置点重构建即生效。
+	/// </summary>
+	public static bool? LegRefit { get; set; }
+
 	/// <param name="modSelector">库里的 Mod 标识（GUID 或前缀）。换甲要用它定位工作区里的节点。</param>
 	/// <param name="targetArchiveIds">
 	/// 这次要烘到哪件护甲上。<b>给 <c>null</c> 就读 <c>wardrobe.json</c> 记着的那件</b>
@@ -250,6 +257,8 @@ public static class VpkRebuildService
 			// 用户自己按的按钮。
 			if (HeadScale is { } headScale)
 				arguments.AddRange(["--head-scale", headScale.ToString("R", CultureInfo.InvariantCulture)]);
+			if (LegRefit is { } legRefit)
+				arguments.AddRange(["--leg-refit", legRefit ? "on" : "off"]);
 			if (reuseModel is not null)
 				arguments.AddRange(["--reuse-model", reuseModel]);
 			arguments.Add("--json");

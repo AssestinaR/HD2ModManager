@@ -57,6 +57,8 @@ namespace HD2ModManager.Services
             // 存成 JSON 会变成 1.1428571428571428；可空能让"没动过"这件事保持可辨认，
             // 也就不会因为一次读写的往返把它截断成别的数。
             public double? HeadScale { get; set; }
+            // VPK 构建时的腿部重拟合（压缩腿让脚回到地面）。null = 从没设过 ⇒ 关（转换器默认）。
+            public bool? LegRefit { get; set; }
             // 低污染模式（P6）：VPK 模型 Mod 编译到自身素体时压缩成 2/3 个 unit。默认关；切换后需一键重构建才生效。
             public bool LowPollutionMode { get; set; } = false;
         }
@@ -120,9 +122,31 @@ namespace HD2ModManager.Services
         public static void ApplyToVpkBuild()
         {
             // 没设过就不传（null）：让转换器用它自己的 8/7，命令行参数也就与以前完全一致。
-            VpkRebuildService.HeadScale = LoadAll()?.HeadScale is { } stored && double.IsFinite(stored)
+            var model = LoadAll();
+            VpkRebuildService.HeadScale = model?.HeadScale is { } stored && double.IsFinite(stored)
                 ? Math.Clamp(stored, MinHeadScale, MaxHeadScale)
                 : null;
+            // 同理：没设过就不传，转换器用自己的默认（关）。
+            VpkRebuildService.LegRefit = model?.LegRefit;
+        }
+
+        /// <summary>腿部重拟合是否开启。没设过 = 关。</summary>
+        public static bool GetLegRefit()
+        {
+            try { return LoadAll()?.LegRefit ?? false; }
+            catch { return false; }
+        }
+
+        /// <summary>写腿部重拟合开关，并立刻同步到建包参数。对已有 Mod 需重构建才生效。</summary>
+        public static bool SetLegRefit(bool enabled)
+        {
+            try
+            {
+                Update(model => model.LegRefit = enabled);
+                ApplyToVpkBuild();
+                return true;
+            }
+            catch { return false; }
         }
 
         public static string GetDefaultExportPath()
@@ -562,7 +586,7 @@ namespace HD2ModManager.Services
 
         private static void RecordDiagnosticChange(string source)
         {
-            if (source is nameof(SetGameDataFolder) or nameof(SetModLibraryFolder) or nameof(SetHeadScale)
+            if (source is nameof(SetGameDataFolder) or nameof(SetModLibraryFolder) or nameof(SetHeadScale) or nameof(SetLegRefit)
                 or nameof(SetAutoImportToActiveProfile) or nameof(SetBuiltInLuaEnabled) or nameof(SetArmorMappingMode)
                 or nameof(SetPhysicsMode) or nameof(SetLowPollutionMode) or nameof(SetDefaultExportPath)
                 or nameof(SetAutoUpdateAssetMetadata) or nameof(SetAssetMetadataRepository) or nameof(SetAutoCheckGameDataIndex))
@@ -586,6 +610,7 @@ namespace HD2ModManager.Services
                     lowPollutionConfigured = model?.LowPollutionMode ?? false,
                     lowPollutionEffective = LuaDeploymentService.BuiltInLuaEnabled && (model?.LowPollutionMode ?? false),
                     headScale = VpkRebuildService.HeadScale ?? DefaultHeadScale,
+                    legRefit = VpkRebuildService.LegRefit ?? false,
                     autoImportToActiveProfile = model?.AutoImportToActiveProfile ?? true,
                     autoUpdateAssetMetadata = model?.AutoUpdateAssetMetadata ?? false,
                     customAssetMetadataRepository = !string.IsNullOrWhiteSpace(model?.AssetMetadataRepository)
