@@ -46,12 +46,16 @@ public sealed partial class Retargeter
 			if (!TryLegJoints(side, out var hip, out var knee, out var ankle, out var kneeHd2))
 				continue;
 
+			// 鞋底样本只取<b>几乎全挂在本侧脚/脚趾上</b>的顶点（≥ GroundSampleWeight）：
+			// 踝以下位移是刚性的 lift × 权重，样本权重≈1 时"求出的 lift"才等于"鞋底实际被抬的量"；
+			// 也排除了挂在小腿上、垂得比鞋底还低的附件把 lift 算大。
 			var influence = new double[points.Length];
+			var footWeight = new double[points.Length];
 			var footMin = double.MaxValue;
 			for (var k = 0; k < points.Length; k++)
 			{
-				influence[k] = LegInfluence(k, side);
-				if (influence[k] > 0.5 && points[k].Z < ankle)
+				(influence[k], footWeight[k]) = LegInfluence(k, side);
+				if (footWeight[k] >= GroundSampleWeight && points[k].Z < ankle)
 					footMin = Math.Min(footMin, points[k].Z);
 			}
 
@@ -63,18 +67,20 @@ public sealed partial class Retargeter
 			var soleCount = 0;
 			for (var k = 0; k < points.Length; k++)
 			{
-				if (influence[k] > 0.5 && points[k].Z < footMin + 0.01)
+				if (points[k].Z < footMin + 0.01 && footWeight[k] >= GroundSampleWeight)
 				{
 					soleSum += points[k].Z;
 					soleCount++;
 				}
 			}
 
-			var lift = _options.LegRefitGround - (soleSum / soleCount);
+			// 4j 的 GroundLift 会在之后整体再抬，所以 4k 的目标要先扣掉它，两者叠加后鞋底仍落在 LegRefitGround。
+			var groundLift = _options.GroundLift;
+			var lift = LegLiftCapacity(hip, ankle, (_options.LegRefitGround - groundLift) - (soleSum / soleCount));
 			if (lift <= 0.0)
 				continue;
 
-			var kneeLift = LegKneeLift(_options.LegRefit, hip, knee, ankle, lift, kneeHd2);
+			var kneeLift = LegKneeLift(_options.LegRefit, hip, knee, ankle, lift, kneeHd2 - groundLift);
 			for (var k = 0; k < points.Length; k++)
 			{
 				if (influence[k] <= 0.0)
@@ -83,6 +89,8 @@ public sealed partial class Retargeter
 				result[k] += new Vec3(0, 0, dz);
 			}
 
+			// jiggle 合成骨：位移在它<b>对应的网格位置</b>（Post 之后）求值，再加到它自己的原点上。
+			// 注意合成骨原点本身从未经过 4c/4d（上游现状，不是本阶段引入的），这里只保证 4k 不让它与网格的相对偏差变大。
 			for (var e = 0; e < extraBones.Count; e++)
 			{
 				var anchor = extraBones[e].AnchorIndex;
@@ -101,6 +109,8 @@ public sealed partial class Retargeter
 	/// 两段的压缩比都只能在 [<see cref="MinSegmentScale"/>, 1]——<b>只缩不拉长</b>，也不把一段腿压到四分之三以下。
 	/// 源髋普遍比 HD2 髋高几厘米，所以"膝往下对齐"常被夹成 0（大腿保持原长、全部压在小腿上）。
 	/// </summary>
+	/// <para>调用方必须先用 <see cref="LegLiftCapacity"/> 把 <paramref name="lift"/> 限制住：只有这样区间才非空、
+	/// 按比例分配也不会把任一段压到下限以下。</para>
 	internal static double LegKneeLift(LegRefitMode mode, double hip, double knee, double ankle, double lift, double kneeHd2)
 	{
 		var thigh = hip - knee;
@@ -112,6 +122,16 @@ public sealed partial class Retargeter
 		var high = Math.Min((1.0 - MinSegmentScale) * thigh, lift);
 		return low > high ? lift * (thigh / (thigh + calf)) : RetargetMath.Clamp(kneeHd2 - knee, low, high);
 	}
+
+	/// <summary>
+	/// 把请求的抬升量限制在腿能承受的范围：整条腿（髋→踝）最多压掉 1 − <see cref="MinSegmentScale"/>。
+	/// lift ≤ 这个容量时，<see cref="LegKneeLift"/> 的区间必然非空，两段压缩比都 ≥ 下限，腿段的 z 顺序也不会翻转。
+	/// 超出的部分不补（脚仍会略陷），宁可少抬也不把腿压坏。
+	/// </summary>
+	internal static double LegLiftCapacity(double hip, double ankle, double requested) =>
+		Math.Min(requested, (1.0 - MinSegmentScale) * (hip - ankle));
+
+	private const double GroundSampleWeight = 0.95;
 
 	/// <summary>高度 z 处的竖直位移：髋以上 0，髋→膝、膝→踝分段线性，踝以下等于踝的抬升（整只脚刚性平移）。</summary>
 	internal static double LegLiftAt(double z, double hip, double knee, double ankle, double kneeLift, double ankleLift)
@@ -136,6 +156,15 @@ public sealed partial class Retargeter
 			|| !_byName.TryGetValue($"{side}_foot", out var footBone))
 			return false;
 
+		// 三个关节都必须真的从源骨 snap 过来。_restWorking 对每根 HD2 骨都有一项，缺源骨时那是
+		// 插值/继承出来的位置，拿它当"源膝"会把压缩分界放错地方——宁可这一侧不做。
+		var sourceSide = side.ToUpperInvariant();
+		foreach (var joint in new[] { "Thigh", "Calf", "Foot" })
+		{
+			if (!_shortByName.ContainsKey($"{sourceSide}_{joint}"))
+				return false;
+		}
+
 		double Height(Hd2RigBone bone) => Post((_deform[bone.Index] * _restWorking[bone.Index]).Origin).Z;
 		if (!_restWorking.ContainsKey(thighBone.Index) || !_restWorking.ContainsKey(kneeBone.Index) || !_restWorking.ContainsKey(footBone.Index))
 			return false;
@@ -147,47 +176,67 @@ public sealed partial class Retargeter
 		return hip > knee + 0.05 && knee > ankle + 0.05;
 	}
 
-	/// <summary>顶点挂在本侧腿（大腿/小腿/脚/脚趾，含上溯到它们的辅助骨）上的权重之和，0–1。</summary>
-	private double LegInfluence(int vertexIndex, string side)
+	/// <summary>
+	/// 顶点挂在本侧腿上的权重之和（大腿/小腿/脚/脚趾，含上溯到它们的辅助骨），以及其中脚/脚趾那一部分。均 0–1。
+	/// </summary>
+	private (double Leg, double Foot) LegInfluence(int vertexIndex, string side)
 	{
 		var weights = _weights[vertexIndex];
 		var bones = _boneIndices[vertexIndex];
-		var sum = 0.0;
+		var leg = 0.0;
+		var foot = 0.0;
 		for (var j = 0; j < weights.Length; j++)
 		{
 			if (weights[j] <= 0.0 || bones[j] < 0 || bones[j] >= _sourceNames.Length)
 				continue;
-			if (IsSourceLegBone(bones[j], side))
-				sum += weights[j];
+			var (boneSide, part) = ClassifySourceLegBone(_sourceNames, _sourceParents, bones[j]);
+			if (part == SourceLegPart.None || boneSide != side)
+				continue;
+			leg += weights[j];
+			if (part == SourceLegPart.Foot)
+				foot += weights[j];
 		}
 
-		return RetargetMath.Clamp(sum, 0, 1);
+		return (RetargetMath.Clamp(leg, 0, 1), RetargetMath.Clamp(foot, 0, 1));
 	}
 
-	private bool IsSourceLegBone(int boneIndex, string side)
+	internal enum SourceLegPart
 	{
-		var prefix = side.ToUpperInvariant() + "_";
+		None,
+		Upper,
+		Foot,
+	}
+
+	/// <summary>
+	/// 沿源骨架上溯，<b>第一根</b>认得出的腿骨决定归属（哪一侧、是不是脚）。只按第一根判，
+	/// 一根骨就只属于一侧——即便父链交叉（<c>R_Foot</c> 挂在 <c>L_Calf</c> 下）也不会被左右各算一次。
+	/// 碰到骨盆/脊柱就停：裙摆、披风的辅助骨因此不算腿。
+	/// </summary>
+	internal static (string Side, SourceLegPart Part) ClassifySourceLegBone(
+		IReadOnlyList<string> names, IReadOnlyList<int> parents, int boneIndex)
+	{
 		var current = boneIndex;
-		for (var hops = 0; current >= 0 && current < _sourceNames.Length && hops <= RetargetConstants.MaxSourceAncestorHops; hops++)
+		for (var hops = 0; current >= 0 && current < names.Count && hops <= RetargetConstants.MaxSourceAncestorHops; hops++)
 		{
-			var text = _sourceNames[current];
+			var text = names[current];
 			if (text.StartsWith(RetargetConstants.SourceBonePrefix, StringComparison.Ordinal))
 				text = text[RetargetConstants.SourceBonePrefix.Length..];
-			if (text.StartsWith(prefix, StringComparison.Ordinal))
+			if (text.Length > 2 && (text[0] == 'L' || text[0] == 'R') && text[1] == '_')
 			{
-				var tail = text[prefix.Length..];
-				if (tail.StartsWith("Thigh", StringComparison.Ordinal) || tail.StartsWith("Calf", StringComparison.Ordinal)
-					|| tail.StartsWith("Foot", StringComparison.Ordinal) || tail.StartsWith("Toe", StringComparison.Ordinal))
-					return true;
+				var tail = text[2..];
+				var side = text[0] == 'L' ? "l" : "r";
+				if (tail.StartsWith("Foot", StringComparison.Ordinal) || tail.StartsWith("Toe", StringComparison.Ordinal))
+					return (side, SourceLegPart.Foot);
+				if (tail.StartsWith("Thigh", StringComparison.Ordinal) || tail.StartsWith("Calf", StringComparison.Ordinal))
+					return (side, SourceLegPart.Upper);
 			}
 
-			// 认出任何一根已知的躯干/另一侧骨就停：它的祖先不可能再是这条腿。
-			if (text is "Pelvis" || text.StartsWith("Spine", StringComparison.Ordinal))
-				return false;
-			current = _sourceParents[current];
+			if (text is "Pelvis" || text.StartsWith("Spine", StringComparison.Ordinal) || current >= parents.Count)
+				break;
+			current = parents[current];
 		}
 
-		return false;
+		return (string.Empty, SourceLegPart.None);
 	}
 
 	private static bool IsLegBoneOf(string hd2Name, string side) =>

@@ -56,6 +56,39 @@ public sealed class LegRefitTests
 		Assert.Equal(0.03, Retargeter.LegKneeLift(LegRefitMode.Bone, Hip, Knee, Ankle, 0.12, kneeHd2: 0.40), 12);
 	}
 
+	[Theory]
+	[InlineData(LegRefitMode.Bone, 0.40)]
+	[InlineData(LegRefitMode.Bone, 0.48)]
+	[InlineData(LegRefitMode.Proportional, 0.0)]
+	public void HugeRequestedLift_IsCapped_SoNoSegmentDropsBelowTheFloor(LegRefitMode mode, double kneeHd2)
+	{
+		// 审查 CR-001：请求 0.25 m 时旧实现两段都被压到约 0.69。
+		var lift = Retargeter.LegLiftCapacity(Hip, Ankle, 0.25);
+		Assert.True(lift < 0.25);
+		var kneeLift = Retargeter.LegKneeLift(mode, Hip, Knee, Ankle, lift, kneeHd2);
+		var thighScale = (Hip - (Knee + kneeLift)) / (Hip - Knee);
+		var calfScale = ((Knee + kneeLift) - (Ankle + lift)) / (Knee - Ankle);
+		Assert.InRange(thighScale, 0.75 - 1e-12, 1.0 + 1e-12);
+		Assert.InRange(calfScale, 0.75 - 1e-12, 1.0 + 1e-12);
+	}
+
+	[Fact]
+	public void SmallLift_IsNotCapped()
+	{
+		Assert.Equal(0.09, Retargeter.LegLiftCapacity(Hip, Ankle, 0.09), 12);
+	}
+
+	[Fact]
+	public void LegBoneOwnership_IsDecidedByTheFirstLegAncestor()
+	{
+		// 审查 CR-006：交叉父链 R_Foot → L_Calf，辅助骨挂在 R_Foot 下，只能算右脚。
+		string[] names = ["ValveBiped.Bip01_Pelvis", "ValveBiped.Bip01_L_Calf", "ValveBiped.Bip01_R_Foot", "source_extra_3", "Skirt_01"];
+		int[] parents = [-1, 0, 1, 2, 0];
+		Assert.Equal(("r", Retargeter.SourceLegPart.Foot), Retargeter.ClassifySourceLegBone(names, parents, 3));
+		Assert.Equal(("l", Retargeter.SourceLegPart.Upper), Retargeter.ClassifySourceLegBone(names, parents, 1));
+		Assert.Equal((string.Empty, Retargeter.SourceLegPart.None), Retargeter.ClassifySourceLegBone(names, parents, 4));
+	}
+
 	[Fact]
 	public void ProportionalMode_SplitsTheLiftByLength()
 	{
