@@ -16,15 +16,23 @@ internal static class CliModRebuild
 		CliWorkspace workspace,
 		HD2ModCore.Domain.ModNode node,
 		double? headScale,
+		bool? legRefit,
+		bool? shoulderTwist,
+		bool? kneeBlend,
+		bool? shoulderFix,
 		Action<string>? onStage,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
 		ArgumentNullException.ThrowIfNull(node);
 
-		// 头部缩放是 Core 的全局几何参数（不进产物记录，见 VpkRebuildService.HeadScale）。
+		// 重定向参数由 Core 转发，不进产物记录。
 		// 命令行一次调用就是一个进程，在这里写一次即可；退出就没了，不会串到别的调用。
 		VpkRebuildService.HeadScale = headScale;
+		VpkRebuildService.LegRefit = legRefit;
+		VpkRebuildService.ShoulderTwist = shoulderTwist;
+		VpkRebuildService.KneeBlend = kneeBlend;
+		VpkRebuildService.ShoulderFix = shoulderFix;
 
 		var libraryRoot = workspace.LibraryRoot
 			?? throw new CliUserException("LibraryNotConfigured", "请用 --library 指定 Mod 库。");

@@ -48,6 +48,8 @@
                     </Grid>
                     <TextBlock Text="{Binding HeadScaleHint}" Style="{StaticResource AppSupportingText}" Margin="150,5,0,0" TextWrapping="Wrap"/>
                     <TextBlock Text="改完之后对受影响的 Mod 点一次「重构建」才会生效。" Style="{StaticResource AppSupportingText}" Margin="150,3,0,0" TextWrapping="Wrap"/>
+                    <CheckBox Style="{StaticResource AppToggleSwitch}" Content="腿部重拟合（修正转换模型脚陷地）" IsChecked="{Binding LegRefit, Mode=TwoWay}" Margin="0,14,0,0"/>
+                    <TextBlock Text="只压缩腿（主要是小腿）让脚回到地面，髋以上、手、头一个顶点都不动。默认关。改完之后对受影响的 Mod 点一次「重构建」才会生效。" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
                     <Grid Margin="0,16,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>

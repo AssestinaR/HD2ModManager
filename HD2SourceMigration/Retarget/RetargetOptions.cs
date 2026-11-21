@@ -153,6 +153,31 @@ public sealed record RetargetOptions
 	/// </summary>
 	public double GroundLift { get; init; }
 
+	/// <summary>
+	/// 4k 腿部重拟合：只压缩腿让脚回到地面，手、躯干、头一个顶点都不动。<b>默认 Off（实验）</b>。
+	/// 详见 <c>Retargeter.ApplyLegRefit</c>。
+	/// </summary>
+	public LegRefitMode LegRefit { get; init; } = LegRefitMode.Off;
+
+	/// <summary>4k 把鞋底放到的高度（米）。HD2 自己的地面在 z = 0。</summary>
+	public double LegRefitGround { get; init; }
+
+	/// <summary>把上臂的部分权重交给 HD2 原生肩扭转骨。</summary>
+	public bool ShoulderTwist { get; init; }
+
+	/// <summary>
+	/// 平滑肩部上臂与躯干的权重交接。<b>默认开</b>：只改权重，静止外观逐顶点不变；
+	/// 属于优化项，不进设置页；<c>--shoulder-fix off</c> 仅供 A/B 对比。
+	/// </summary>
+	public bool ShoulderFix { get; init; } = true;
+
+	/// <summary>
+	/// 校正膝区的网格深度，并按膝前、膝窝分别重分配权重。<b>默认开</b>：
+	/// 它只在腿截面确实偏后时才移动网格，偏差不大的模型只是放宽权重过渡，静止外观不变。
+	/// 属于优化项，不进设置页；<c>--knee-blend off</c> 仅供 A/B 对比。
+	/// </summary>
+	public bool KneeBlend { get; init; } = true;
+
 	public double UpperScale { get; init; } = 1.12;
 
 	public double? UpperPivotZ { get; init; } = 1.15;
