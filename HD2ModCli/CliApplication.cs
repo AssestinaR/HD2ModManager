@@ -982,6 +982,8 @@ public static class CliApplication
 				node,
 				invocation.Options.HeadScale,
 				invocation.Options.LegRefit,
+				invocation.Options.ShoulderTwist,
+				invocation.Options.KneeBlend,
 				stage => Console.Error.WriteLine("#progress " + stage)).ConfigureAwait(false);
 			Emit(invocation.Options, new { ok = outcome.Ok, rebuild = outcome }, () => FormatModRebuild(outcome));
 			return outcome.Ok ? 0 : 2;
@@ -4078,10 +4080,11 @@ public static class CliApplication
 			}
 		}
 
-		// 头部缩放 / 腿部重拟合：只在显式给了 `--head-scale` / `--leg-refit` 时才构造一份 options ——
+		// 显式给了重定向参数才构造一份 options。
 		// 其余字段继续用 RetargetOptions 的默认值（那就是发货配置），都不传时行为与以前逐字节一致。
 		RetargetOptions? retargetOptions = null;
-		if (options.HeadScale is not null || options.LegRefit is not null)
+		if (options.HeadScale is not null || options.LegRefit is not null
+			|| options.ShoulderTwist is not null || options.KneeBlend is not null)
 		{
 			var defaults = new RetargetOptions();
 			retargetOptions = defaults with
@@ -4090,6 +4093,8 @@ public static class CliApplication
 				LegRefit = options.LegRefit is { } legRefit
 					? (legRefit ? LegRefitMode.Bone : LegRefitMode.Off)
 					: defaults.LegRefit,
+				ShoulderTwist = options.ShoulderTwist ?? defaults.ShoulderTwist,
+				KneeBlend = options.KneeBlend ?? defaults.KneeBlend,
 			};
 		}
 		var retarget = SourceRetargetPipeline.Run(inputs, rig, null, retargetOptions);
@@ -9069,7 +9074,7 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	                    使用前必须明确告知用户「这是实验功能、可能让 Mod 与本工具的正常产物不一致」。
 	    --disabled <unit:1,2;unit:3>
 	                    要烘成关闭状态的 section（**来源** Unit 键空间，与 wardrobe.json 存的一致）。
-	  hd2mod vpk2patch <VPK文件> [<VPK文件> ...] --output <输出根目录> [--avatar-toc <avatar Unit TocData>] [--game-data <游戏data目录>] [--material-source <分号分隔的 VPK 或目录>] [--components merge|all|none|<名字,名字>] [--json]
+	  hd2mod vpk2patch <VPK文件> [<VPK文件> ...] --output <输出根目录> [--avatar-toc <avatar Unit TocData>] [--game-data <游戏data目录>] [--material-source <分号分隔的 VPK 或目录>] [--components merge|all|none|<名字,名字>] [--shoulder-twist on|off] [--knee-blend on|off] [--json]
 	    把**一批** VPK 逐个翻译成 patch：每个 VPK 出**一个** patch，只含它自己的资源。
 	    自动识别类型：含 .mdl → 出 unit patch（零材质零贴图）；只有 .vmt/.vtf → 出材质/贴图 patch。
 	    整批构成**解析集合**：材质 VPK 从队列里找模型（算 matcap 平均色要几何），

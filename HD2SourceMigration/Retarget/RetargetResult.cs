@@ -79,6 +79,12 @@ public sealed record RetargetResult(
 	IReadOnlyDictionary<string, string> JiggleAnchors,
 	RetargetMetrics Metrics)
 {
+	internal bool ShoulderTwist { get; init; }
+
+	internal bool KneeBlend { get; init; }
+
+	internal IReadOnlyList<uint> DepthAdjustedKnees { get; init; } = [];
+
 	/// <summary>把结果里的顶点位置摊平成 <c>[x, y, z]</c> 数组，供 npz 落盘与逐点对拍。</summary>
 	public static double[,] ToArray(IReadOnlyList<Vec3> points)
 	{

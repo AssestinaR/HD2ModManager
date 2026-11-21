@@ -41,11 +41,14 @@ public static class RetargetedMeshBuilder
 		var vertices = new RetargetedVertex[group.VertexIndices.Count];
 		var influencesByVertex = new IReadOnlyList<RetargetedInfluence>[group.VertexIndices.Count];
 		var fingerWeights = new FingerJointWeights(result.Fingers, avatarTransformInfo);
+		var jointWeights = result.ShoulderTwist || result.KneeBlend
+			? new JointWeights(avatarTransformInfo, result.ShoulderTwist, result.KneeBlend, result.DepthAdjustedKnees)
+			: null;
 		for (var i = 0; i < vertices.Length; i++)
 		{
 			var source = geometry.Vertices[group.VertexIndices[i]];
 			influencesByVertex[i] = CollectInfluences(
-				source, result, avatarTransformInfo, result.Output[group.VertexIndices[i]], fingerWeights);
+				source, result, avatarTransformInfo, result.Output[group.VertexIndices[i]], fingerWeights, jointWeights);
 		}
 
 		// 三角形按**源材质**分段。源侧归属来自 SourceTriangle.MaterialIndex，是数据不是猜的。
@@ -108,7 +111,7 @@ public static class RetargetedMeshBuilder
 	/// </summary>
 	private static IReadOnlyList<RetargetedInfluence> CollectInfluences(
 		SourceVertex vertex, RetargetResult result, UnitTransformInfo avatarTransformInfo, Vec3 finalPosition,
-		FingerJointWeights fingerWeights)
+		FingerJointWeights fingerWeights, JointWeights? jointWeights)
 	{
 		var byHash = new Dictionary<uint, double>();
 		foreach (var (boneIndex, weight) in new[]
@@ -136,6 +139,7 @@ public static class RetargetedMeshBuilder
 		if (byHash.Count > 0)
 			ForearmWeightReweight.Apply(byHash, finalPosition, avatarTransformInfo);
 		fingerWeights.Apply(byHash, finalPosition, MaxInfluences);
+		jointWeights?.Apply(byHash, finalPosition, MaxInfluences);
 
 		if (byHash.Count == 0)
 			return [];

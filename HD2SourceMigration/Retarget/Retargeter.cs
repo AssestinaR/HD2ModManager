@@ -423,6 +423,10 @@ public sealed partial class Retargeter
 				outPoints[i] += lift;
 		}
 
+		var depthAdjustedKnees = _options.KneeBlend && _options.Skeleton == RetargetSkeleton.Native
+			? AlignKneeDepth(outPoints, jiggleTargets, extraBones)
+			: [];
+
 		// ---- 5. 游戏真正显示的姿态 -------------------------------------------
 		var idleOutput = ApplyIdle(outPoints);
 
@@ -456,7 +460,12 @@ public sealed partial class Retargeter
 			extraBones,
 			jiggleTargets,
 			jiggleAnchors,
-			metrics);
+			metrics)
+		{
+			ShoulderTwist = _options.ShoulderTwist,
+			KneeBlend = _options.KneeBlend,
+			DepthAdjustedKnees = depthAdjustedKnees,
+		};
 	}
 
 	/// <summary>

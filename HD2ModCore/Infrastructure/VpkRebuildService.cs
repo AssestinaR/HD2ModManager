@@ -116,6 +116,11 @@ public static class VpkRebuildService
 	/// </summary>
 	public static bool? LegRefit { get; set; }
 
+	/// <summary>肩扭转和膝过渡的转换参数。未指定时使用转换器默认值。</summary>
+	public static bool? ShoulderTwist { get; set; }
+
+	public static bool? KneeBlend { get; set; }
+
 	/// <param name="modSelector">库里的 Mod 标识（GUID 或前缀）。换甲要用它定位工作区里的节点。</param>
 	/// <param name="targetArchiveIds">
 	/// 这次要烘到哪件护甲上。<b>给 <c>null</c> 就读 <c>wardrobe.json</c> 记着的那件</b>
@@ -259,6 +264,10 @@ public static class VpkRebuildService
 				arguments.AddRange(["--head-scale", headScale.ToString("R", CultureInfo.InvariantCulture)]);
 			if (LegRefit is { } legRefit)
 				arguments.AddRange(["--leg-refit", legRefit ? "on" : "off"]);
+			if (ShoulderTwist is { } shoulderTwist)
+				arguments.AddRange(["--shoulder-twist", shoulderTwist ? "on" : "off"]);
+			if (KneeBlend is { } kneeBlend)
+				arguments.AddRange(["--knee-blend", kneeBlend ? "on" : "off"]);
 			if (reuseModel is not null)
 				arguments.AddRange(["--reuse-model", reuseModel]);
 			arguments.Add("--json");

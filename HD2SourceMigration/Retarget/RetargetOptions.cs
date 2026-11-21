@@ -162,6 +162,12 @@ public sealed record RetargetOptions
 	/// <summary>4k 把鞋底放到的高度（米）。HD2 自己的地面在 z = 0。</summary>
 	public double LegRefitGround { get; init; }
 
+	/// <summary>把上臂的部分权重交给 HD2 原生肩扭转骨。</summary>
+	public bool ShoulderTwist { get; init; }
+
+	/// <summary>校正膝区的网格深度，并按膝前、膝窝分别重分配权重。</summary>
+	public bool KneeBlend { get; init; }
+
 	public double UpperScale { get; init; } = 1.12;
 
 	public double? UpperPivotZ { get; init; } = 1.15;
