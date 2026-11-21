@@ -167,7 +167,8 @@ public sealed record CliGlobalOptions(
 	// 不传 = 转换器默认（关）。与头部缩放同一类纯几何全局参数，管理器每次重构建按当前设置传入。
 	bool? LegRefit = null,
 	bool? ShoulderTwist = null,
-	bool? KneeBlend = null);
+	bool? KneeBlend = null,
+	bool? ShoulderFix = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -200,6 +201,7 @@ public static class CliArgumentParser
 		double? headScale = null;
 		bool? legRefit = null;
 		bool? shoulderTwist = null;
+		bool? shoulderFix = null;
 		bool? kneeBlend = null;
 		string? matcap = null;
 		string? donor = null;
@@ -340,6 +342,7 @@ public static class CliArgumentParser
 					};
 					break;
 				case "--shoulder-twist":
+				case "--shoulder-fix":
 				case "--knee-blend":
 					var rawJointOption = ReadValue(args, ref index, argument);
 					var jointOption = rawJointOption switch
@@ -350,6 +353,8 @@ public static class CliArgumentParser
 					};
 					if (argument == "--shoulder-twist")
 						shoulderTwist = jointOption;
+					else if (argument == "--shoulder-fix")
+						shoulderFix = jointOption;
 					else
 						kneeBlend = jointOption;
 					break;
@@ -664,7 +669,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, headMergeConsent, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry, headScale, legRefit, shoulderTwist, kneeBlend));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, headMergeConsent, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry, headScale, legRefit, shoulderTwist, kneeBlend, shoulderFix));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

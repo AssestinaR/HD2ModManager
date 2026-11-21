@@ -463,6 +463,7 @@ public sealed partial class Retargeter
 			metrics)
 		{
 			ShoulderTwist = _options.ShoulderTwist,
+			ShoulderFix = _options.ShoulderFix,
 			KneeBlend = _options.KneeBlend,
 			DepthAdjustedKnees = depthAdjustedKnees,
 		};

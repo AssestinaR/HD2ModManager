@@ -119,6 +119,8 @@ public static class VpkRebuildService
 	/// <summary>肩扭转和膝过渡的转换参数。未指定时使用转换器默认值。</summary>
 	public static bool? ShoulderTwist { get; set; }
 
+	public static bool? ShoulderFix { get; set; }
+
 	public static bool? KneeBlend { get; set; }
 
 	/// <param name="modSelector">库里的 Mod 标识（GUID 或前缀）。换甲要用它定位工作区里的节点。</param>
@@ -266,6 +268,8 @@ public static class VpkRebuildService
 				arguments.AddRange(["--leg-refit", legRefit ? "on" : "off"]);
 			if (ShoulderTwist is { } shoulderTwist)
 				arguments.AddRange(["--shoulder-twist", shoulderTwist ? "on" : "off"]);
+			if (ShoulderFix is { } shoulderFix)
+				arguments.AddRange(["--shoulder-fix", shoulderFix ? "on" : "off"]);
 			if (KneeBlend is { } kneeBlend)
 				arguments.AddRange(["--knee-blend", kneeBlend ? "on" : "off"]);
 			if (reuseModel is not null)

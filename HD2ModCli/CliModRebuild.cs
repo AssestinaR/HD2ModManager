@@ -19,6 +19,7 @@ internal static class CliModRebuild
 		bool? legRefit,
 		bool? shoulderTwist,
 		bool? kneeBlend,
+		bool? shoulderFix,
 		Action<string>? onStage,
 		CancellationToken cancellationToken = default)
 	{
@@ -31,6 +32,7 @@ internal static class CliModRebuild
 		VpkRebuildService.LegRefit = legRefit;
 		VpkRebuildService.ShoulderTwist = shoulderTwist;
 		VpkRebuildService.KneeBlend = kneeBlend;
+		VpkRebuildService.ShoulderFix = shoulderFix;
 
 		var libraryRoot = workspace.LibraryRoot
 			?? throw new CliUserException("LibraryNotConfigured", "请用 --library 指定 Mod 库。");

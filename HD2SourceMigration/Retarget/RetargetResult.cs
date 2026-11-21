@@ -81,6 +81,8 @@ public sealed record RetargetResult(
 {
 	internal bool ShoulderTwist { get; init; }
 
+	internal bool ShoulderFix { get; init; }
+
 	internal bool KneeBlend { get; init; }
 
 	internal IReadOnlyList<uint> DepthAdjustedKnees { get; init; } = [];
