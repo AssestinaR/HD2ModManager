@@ -153,6 +153,15 @@ public sealed record RetargetOptions
 	/// </summary>
 	public double GroundLift { get; init; }
 
+	/// <summary>
+	/// 4k 腿部重拟合：只压缩腿让脚回到地面，手、躯干、头一个顶点都不动。<b>默认 Off（实验）</b>。
+	/// 详见 <c>Retargeter.ApplyLegRefit</c>。
+	/// </summary>
+	public LegRefitMode LegRefit { get; init; } = LegRefitMode.Off;
+
+	/// <summary>4k 把鞋底放到的高度（米）。HD2 自己的地面在 z = 0。</summary>
+	public double LegRefitGround { get; init; }
+
 	public double UpperScale { get; init; } = 1.12;
 
 	public double? UpperPivotZ { get; init; } = 1.15;

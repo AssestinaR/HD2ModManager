@@ -407,6 +407,11 @@ public sealed partial class Retargeter
 		if (Math.Abs(_options.PalmScale - 1.0) > 1e-12 || _options.PalmScaleAuto)
 			outPoints = ApplyPalmScale(outPoints, palmGirth);
 
+		// ---- 4k. 仅网格的腿部重拟合 -----------------------------------------
+		// 在所有按 z 羽化的阶段之后、整体抬升之前：此时网格已在最终空间，手已贴在手骨上。
+		if (_options.LegRefit != LegRefitMode.Off)
+			outPoints = ApplyLegRefit(outPoints, extraBones);
+
 		// ---- 4j. 抬回地面 ----------------------------------------------------
 		// **必须是最后一步纯平移。** 4c 的 MeshShift 把整张网格往下压了 0.090（脚底于是落到
 		// z = −0.0912 m），4d/4e 的缩放又按 z 做了羽化，所以"把下移量改小"并不等于"把结果抬回去"。
