@@ -165,8 +165,12 @@ public sealed record RetargetOptions
 	/// <summary>把上臂的部分权重交给 HD2 原生肩扭转骨。</summary>
 	public bool ShoulderTwist { get; init; }
 
-	/// <summary>校正膝区的网格深度，并按膝前、膝窝分别重分配权重。</summary>
-	public bool KneeBlend { get; init; }
+	/// <summary>
+	/// 校正膝区的网格深度，并按膝前、膝窝分别重分配权重。<b>默认开</b>：
+	/// 它只在腿截面确实偏后时才移动网格，偏差不大的模型只是放宽权重过渡，静止外观不变。
+	/// 属于优化项，不进设置页；<c>--knee-blend off</c> 仅供 A/B 对比。
+	/// </summary>
+	public bool KneeBlend { get; init; } = true;
 
 	public double UpperScale { get; init; } = 1.12;
 

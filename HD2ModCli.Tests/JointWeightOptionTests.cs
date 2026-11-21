@@ -6,11 +6,11 @@ namespace HD2ModCli.Tests;
 public sealed class JointWeightOptionTests
 {
 	[Fact]
-	public void Defaults_AreOffAndCliLeavesThemUnset()
+	public void Defaults_KneeOnShoulderOff_AndCliLeavesThemUnset()
 	{
 		var defaults = new RetargetOptions();
 		Assert.False(defaults.ShoulderTwist);
-		Assert.False(defaults.KneeBlend);
+		Assert.True(defaults.KneeBlend);
 		var options = CliArgumentParser.Parse(["vpk2patch", "a.vpk"]).Options;
 		Assert.Null(options.ShoulderTwist);
 		Assert.Null(options.KneeBlend);
