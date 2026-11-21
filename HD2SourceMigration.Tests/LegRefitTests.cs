@@ -90,6 +90,44 @@ public sealed class LegRefitTests
 	}
 
 	[Fact]
+	public void MixedWeightShoe_IsStillSampled_AndLandsOnTheGround()
+	{
+		// 审查 CR-003 第 2 轮：鞋底 0.9 脚 + 0.1 小腿（腿权重 1.0）。0.95 门槛会整只鞋跳过。
+		double[] z = [-0.090, -0.088, 0.30];
+		double[] leg = [1.0, 1.0, 1.0];
+		double[] foot = [0.9, 0.9, 0.0];
+		var needed = Retargeter.SoleLiftNeeded(z, leg, foot, Ankle, 0.0);
+		Assert.NotNull(needed);
+		Assert.Equal(0.089, needed!.Value, 9);
+	}
+
+	[Fact]
+	public void PartialLegWeight_IsCompensated_SoTheSoleReachesTheTarget()
+	{
+		// 腿权重 0.95：实际位移是 lift × 0.95，反求后鞋底恰好到 0，不再剩 4.5 mm。
+		double[] z = [-0.090];
+		double[] leg = [0.95];
+		double[] foot = [0.95];
+		var needed = Retargeter.SoleLiftNeeded(z, leg, foot, Ankle, 0.0)!.Value;
+		Assert.Equal(0.0, -0.090 + (needed * 0.95), 12);
+	}
+
+	[Fact]
+	public void CalfAttachmentHangingBelowTheShoe_IsNotTakenAsTheSole()
+	{
+		double[] z = [-0.200, -0.090];
+		double[] leg = [1.0, 1.0];
+		double[] foot = [0.0, 1.0];
+		Assert.Equal(0.090, Retargeter.SoleLiftNeeded(z, leg, foot, Ankle, 0.0)!.Value, 12);
+	}
+
+	[Fact]
+	public void NoFootSamples_SkipsTheSide()
+	{
+		Assert.Null(Retargeter.SoleLiftNeeded([-0.09], [1.0], [0.2], Ankle, 0.0));
+	}
+
+	[Fact]
 	public void ProportionalMode_SplitsTheLiftByLength()
 	{
 		var thigh = Hip - Knee;

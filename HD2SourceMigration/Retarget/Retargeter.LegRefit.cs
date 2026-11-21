@@ -46,37 +46,20 @@ public sealed partial class Retargeter
 			if (!TryLegJoints(side, out var hip, out var knee, out var ankle, out var kneeHd2))
 				continue;
 
-			// 鞋底样本只取<b>几乎全挂在本侧脚/脚趾上</b>的顶点（≥ GroundSampleWeight）：
-			// 踝以下位移是刚性的 lift × 权重，样本权重≈1 时"求出的 lift"才等于"鞋底实际被抬的量"；
-			// 也排除了挂在小腿上、垂得比鞋底还低的附件把 lift 算大。
+			var heights = new double[points.Length];
 			var influence = new double[points.Length];
 			var footWeight = new double[points.Length];
-			var footMin = double.MaxValue;
 			for (var k = 0; k < points.Length; k++)
 			{
+				heights[k] = points[k].Z;
 				(influence[k], footWeight[k]) = LegInfluence(k, side);
-				if (footWeight[k] >= GroundSampleWeight && points[k].Z < ankle)
-					footMin = Math.Min(footMin, points[k].Z);
-			}
-
-			if (footMin == double.MaxValue)
-				continue;
-
-			// 鞋底：这只脚最低 1 cm 内顶点的平均高度，与 1b 量源脚底的口径一致。
-			var soleSum = 0.0;
-			var soleCount = 0;
-			for (var k = 0; k < points.Length; k++)
-			{
-				if (points[k].Z < footMin + 0.01 && footWeight[k] >= GroundSampleWeight)
-				{
-					soleSum += points[k].Z;
-					soleCount++;
-				}
 			}
 
 			// 4j 的 GroundLift 会在之后整体再抬，所以 4k 的目标要先扣掉它，两者叠加后鞋底仍落在 LegRefitGround。
 			var groundLift = _options.GroundLift;
-			var lift = LegLiftCapacity(hip, ankle, (_options.LegRefitGround - groundLift) - (soleSum / soleCount));
+			if (SoleLiftNeeded(heights, influence, footWeight, ankle, _options.LegRefitGround - groundLift) is not { } needed)
+				continue;
+			var lift = LegLiftCapacity(hip, ankle, needed);
 			if (lift <= 0.0)
 				continue;
 
@@ -131,7 +114,47 @@ public sealed partial class Retargeter
 	internal static double LegLiftCapacity(double hip, double ankle, double requested) =>
 		Math.Min(requested, (1.0 - MinSegmentScale) * (hip - ankle));
 
-	private const double GroundSampleWeight = 0.95;
+	/// <summary>
+	/// 让这只脚的鞋底落到 <paramref name="target"/> 所需的（未限幅的）抬升量；没有鞋底样本时返回 null。
+	/// <para>
+	/// 样本：踝以下、<b>以本侧脚/脚趾为主</b>（脚权重 ≥ <see cref="GroundSampleWeight"/>）的顶点。以脚为主而不是
+	/// "几乎全挂在脚上"：Source 的鞋常是 0.9 脚 + 0.1 小腿，门槛太高会整只鞋被跳过；挂在小腿上、垂得比鞋底
+	/// 还低的附件也不会被当成鞋底。取最低 1 cm 内样本的平均高度（与 1b 量源脚底的口径一致）。
+	/// </para>
+	/// <para>
+	/// 踝以下的实际位移是 lift × 腿权重，所以按样本的平均腿权重反求 lift——腿权重 0.95 时鞋底不会剩 4.5 mm。
+	/// </para>
+	/// </summary>
+	internal static double? SoleLiftNeeded(
+		IReadOnlyList<double> heights, IReadOnlyList<double> legWeight, IReadOnlyList<double> footWeight, double ankle, double target)
+	{
+		var footMin = double.MaxValue;
+		for (var k = 0; k < heights.Count; k++)
+		{
+			if (footWeight[k] >= GroundSampleWeight && heights[k] < ankle)
+				footMin = Math.Min(footMin, heights[k]);
+		}
+
+		if (footMin == double.MaxValue)
+			return null;
+
+		var sum = 0.0;
+		var weight = 0.0;
+		var count = 0;
+		for (var k = 0; k < heights.Count; k++)
+		{
+			if (footWeight[k] >= GroundSampleWeight && heights[k] < footMin + 0.01)
+			{
+				sum += heights[k];
+				weight += legWeight[k];
+				count++;
+			}
+		}
+
+		return (target - (sum / count)) / Math.Max(weight / count, GroundSampleWeight);
+	}
+
+	private const double GroundSampleWeight = 0.5;
 
 	/// <summary>高度 z 处的竖直位移：髋以上 0，髋→膝、膝→踝分段线性，踝以下等于踝的抬升（整只脚刚性平移）。</summary>
 	internal static double LegLiftAt(double z, double hip, double knee, double ankle, double kneeLift, double ankleLift)
