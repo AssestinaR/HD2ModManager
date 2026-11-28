@@ -443,6 +443,55 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
+	/// <c>FlattenToColourAtLevel</c>：<b>色相</b>取 matcap 均值，<b>明度</b>取源底色的亮度。
+	/// <para>
+	/// 反例就是它的存在理由：把 matcap 自己的均值直接写成底色，等于色相和亮度各算一遍。
+	/// 实测（2026-11-28 恋星 milfy）：`purple` 底图 (0,0,13) 被涂成 (148,98,214)、
+	/// `yellow` (13,0,0) → (252,167,143)，游戏里表现为"眉毛整条变成品红"——
+	/// 是一块真的平色，不是缺材质那种会呼吸的洋红。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void FlatteningToAColourAtTheSourceLevelKeepsTheHueButNotTheMatcapBrightness()
+	{
+		// matcap 均值是一个很亮的紫；源底色是近黑（13/255 ≈ 0.051）。
+		var pixels = MaterialAppearance.SolidRgba(4, 10, 10, 10);
+		MaterialAppearance.FlattenToColourAtLevel(pixels, 0.58, 0.38, 0.84, 13 / 255.0);
+
+		// 明度按"最大通道对齐到 0.051"缩放 ⇒ 蓝通道 13、其余按 0.58:0.38:0.84 的比例变暗。
+		Assert.Equal(13, pixels[2]);
+		Assert.Equal(9, pixels[0]);
+		Assert.Equal(6, pixels[1]);
+		Assert.True(pixels[1] < pixels[0] && pixels[0] < pixels[2], "色相要保留：绿 < 红 < 蓝（偏紫）");
+		// 远比"直接写 matcap 均值"暗 —— 旧行为是 148/98/214。
+		Assert.True(pixels[2] < 40, "不能把近黑金属片涂成亮色");
+
+		// 同一个色相、明度取源侧更亮的值：结果更亮但比例不变。
+		var brighter = MaterialAppearance.SolidRgba(4, 10, 10, 10);
+		MaterialAppearance.FlattenToColourAtLevel(brighter, 0.58, 0.38, 0.84, 200 / 255.0);
+		Assert.Equal(200, brighter[2]);
+		Assert.True(brighter[0] > pixels[0] && brighter[1] > pixels[1], "明度跟着源底色走");
+
+		// 纯黑 matcap 均值没有色相可言：退回中性平色，但明度仍然跟随源侧。
+		var neutral = MaterialAppearance.SolidRgba(4, 10, 10, 10);
+		MaterialAppearance.FlattenToColourAtLevel(neutral, 0, 0, 0, 13 / 255.0);
+		Assert.Equal(neutral[0], neutral[1]);
+		Assert.Equal(neutral[1], neutral[2]);
+		Assert.Equal(13, neutral[2]);
+
+		// alpha 不参与（与 FlattenToColour / FlattenToMetalF0 一致）。
+		var withAlpha = MaterialAppearance.SolidRgba(1, 0, 0, 0);
+		withAlpha[3] = 77;
+		MaterialAppearance.FlattenToColourAtLevel(withAlpha, 1, 0, 0, 1.0);
+		Assert.Equal(77, withAlpha[3]);
+
+		Assert.Throws<ArgumentOutOfRangeException>(
+			() => MaterialAppearance.FlattenToColourAtLevel(new byte[4], 1, 1, 1, double.NaN));
+		Assert.Throws<InvalidDataException>(
+			() => MaterialAppearance.FlattenToColourAtLevel(new byte[7], 1, 1, 1, 0.5));
+	}
+
+	/// <summary>
 	/// <c>IsContentFreeBase</c>：只有"底色没有自己的**颜色**"时 matcap 才算承载表面。
 	/// <para>
 	/// 两个方向都有实机依据：

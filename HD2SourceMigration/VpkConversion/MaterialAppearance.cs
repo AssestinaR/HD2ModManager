@@ -737,6 +737,61 @@ public static class MaterialAppearance
 	private static byte SrgbByte(double value)
 		=> (byte)Math.Clamp((int)Math.Round(Math.Clamp(value, 0, 1) * 255), 0, 255);
 
+	/// <summary>
+	/// 把整片底色涂成"<b>色相取 <paramref name="r"/>/<paramref name="g"/>/<paramref name="b"/>，明度取
+	/// <paramref name="level"/></b>"的平色（每通道 0..1，按 sRGB 直接写）。
+	/// <para>
+	/// <b>为什么不直接写 <see cref="FlattenToColour"/>。</b>那个函数的入参按文档应当是
+	/// <b>合成后</b>的均值（源侧实测 12 / 69 / 46 / 132 —— 都很暗），而调用方手上只有
+	/// <b>matcap 自己的</b>均值（亮：实测某紫宝石件 0.58 / 0.38 / 0.84）。直接写下去等于
+	/// 把"色相"和"亮度"各算了一遍：源侧本来就是一块近黑的金属片，被涂成了亮紫/亮粉。
+	/// <para>
+	/// 实测（2026-11-28，恋星 milfy）：`purple` 底图 (0,0,13) → (148,98,214)、
+	/// `yellow` (13,0,0) → (252,167,143)、`green` (0,13,0) → (88,190,165)，
+	/// 游戏里表现为"眉毛整条变成品红"（不是缺材质的呼吸色，而是一块真的平色）。
+	/// </para>
+	/// <para>
+	/// 所以这里把两者分开：<b>色相</b>从 matcap 均值来（保住绿宝石/紫宝石的差别），
+	/// <b>明度</b>回到源侧底色自己的亮度（保住"黑亮金属"）。缩放按"最大通道对齐到
+	/// <paramref name="level"/>"做，通道之间的比例不变 ⇒ 色相不变。
+	/// </para>
+	/// </para>
+	/// </summary>
+	public static void FlattenToColourAtLevel(byte[] rgba, double r, double g, double b, double level)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+		if (!double.IsFinite(level))
+			throw new ArgumentOutOfRangeException(nameof(level), $"目标明度必须是有限数，实际是 {level}。");
+
+		var target = Math.Clamp(level, 0, 1);
+		var peak = Math.Max(Math.Max(r, g), Math.Max(b, 0));
+		double red, green, blue;
+		if (peak <= 1e-6)
+		{
+			// matcap 均值是纯黑：没有色相可言，退回中性平色（保持明度）。
+			red = green = blue = target;
+		}
+		else
+		{
+			var scale = target / peak;
+			red = r * scale;
+			green = g * scale;
+			blue = b * scale;
+		}
+
+		var redByte = SrgbByte(red);
+		var greenByte = SrgbByte(green);
+		var blueByte = SrgbByte(blue);
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			rgba[offset + 0] = redByte;
+			rgba[offset + 1] = greenByte;
+			rgba[offset + 2] = blueByte;
+		}
+	}
+
 	/// <summary>按线性反射率涂成一个中性平色（旧的金属 F0 路径）。</summary>
 	public static void FlattenToMetalF0(byte[] rgba, double targetLinear)
 	{

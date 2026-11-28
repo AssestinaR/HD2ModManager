@@ -3547,8 +3547,20 @@ public sealed class SourceMaterialConverter
 				// 以前的常量 0.58 是把它抬成中性灰（"白石膏"），而源侧实测的合成均值是
 				// 12（头冠，黑亮）/ 69（绿灯笼）/ 46（绿宝石耳坠）/ 132（亮银件）——
 				// 常量既抹掉明度差也抹掉色相。平色不引入"雾"，见 CanBakeIntoAlbedo 的实测。
+				//
+				// **2026-11-28 修正：只取 matcap 均值的色相，明度回到源侧底色。**
+				// 上面那句"源侧实测的合成均值是 12/69/46/132"说的是**合成后**的亮度，
+				// 而 MatcapMean 是 **matcap 自己的**均值（亮得多：实测紫宝石件 0.58/0.38/0.84）。
+				// 直接把它写成底色 = 色相与亮度各算一遍 ⇒ 一块黑亮金属片变成亮紫/亮粉。
+				// 实测（恋星 milfy）：purple 底图 (0,0,13)→(148,98,214)、yellow (13,0,0)→(252,167,143)、
+				// green (0,13,0)→(88,190,165)，游戏里就是"眉毛整条变品红"。
 				if (loaded.MatcapMean is { Length: >= 3 } cutoutMeanColour)
-					MaterialAppearance.FlattenToColour(rgba, cutoutMeanColour[0], cutoutMeanColour[1], cutoutMeanColour[2]);
+				{
+					var sourceMean = AverageColor(loaded.SourceBaseRgba);
+					MaterialAppearance.FlattenToColourAtLevel(
+						rgba, cutoutMeanColour[0], cutoutMeanColour[1], cutoutMeanColour[2],
+						Math.Max(sourceMean[0], Math.Max(sourceMean[1], sourceMean[2])));
+				}
 				else
 					MaterialAppearance.FlattenToMetalF0(rgba, CutoutMetalLevel);
 			}
