@@ -1,3 +1,4 @@
+using HD2ModAdaptation.Analysis;
 using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure.KitInstance;
@@ -26,24 +27,102 @@ public static class KitNonPlayerArmors
 	public const uint DemocracyOfficerArmorId = 124623533u;
 
 	/// <summary>
-	/// 民主官 NPC 的脸：一个不属于任何护甲记录的 unit（飞船上的 NPC 头部，材质共 5 个）。
+	/// 民主官 NPC 的**头**：一个不属于任何护甲记录的 unit（NPC 头部资源，材质共 5 个）。
 	/// <para>
-	/// 依据（2026-11-16 实机，Hider 0.4.4 的 <c>officer_near</c> 清单）：民主官标记件 0.6 米内共 36 个 unit，
-	/// 其中只有它同时满足「不在任何护甲记录里」和「用到了『守岸人 替换 女舰长』Mod 覆盖的原版材质」——
-	/// 这正是装了那个 Mod 后民主官脸消失的原因。护甲映射的隐藏集管不到它，所以单独补进来。
-	/// 同一处还有 15678e36…、5b390845…、8085023e…、9512a3db…、be0be6b1… 等非护甲 unit，尚未确认是不是头发/眼睛。
+	/// <b>2026-11-24 探针 v7 实机重新量过</b>（旧记录 <c>7862870bc9822eeb</c> 作废）：
+	/// 旧 id 在整轮全量扫描 + 36 个候选 id 的 <c>units_by_resource(IdString64)</c> 查询里
+	/// **一个实例都没有**，所以按它隐藏从来没有生效过。新值的依据：
+	/// </para>
+	/// <list type="number">
+	/// <item>它坐在民主官的根 <c>15678e360612b805</c> **正坐标上**（dx=dy=dz=0），全船**只有 1 个实例**。</item>
+	/// <item>它属于 <c>kit_instance_hider.HEAD_CANDIDATES</c> 那 31 个 NPC 头部 unit 之一。</item>
+	/// <item>飞船上的 NPC 结构一致：每个都是「84～95 节点的根 + 一个 179 节点的伴生 unit」，
+	/// 女舰长 / 维修技术员 / SEAF / 守岸人那几套的 179 节点伴生 unit 全在这个候选表里。</item>
+	/// </list>
+	/// <para>
+	/// 仍是"一个资源 id"，所以按实例隐藏（<c>UV.set_unit_visibility</c>）而不是换材质 ——
+	/// 换材质是全局的，会把所有用这套 NPC 头的角色一起改掉。
 	/// </para>
 	/// </summary>
-	public const ulong DemocracyOfficerFaceUnitId = 0x7862870bc9822eebUL;
+	public const ulong DemocracyOfficerHeadUnitId = 0x387f271c7f49614fUL;
 
 	/// <summary>
-	/// 这条护甲记录穿在身上时、除自身部件外还要一并按实例隐藏的 unit（目前只有民主官的脸）。
+	/// 民主官的根 unit（2026-11-24 v7 实测）：<c>anim=true</c>、84 个场景节点、全船唯一，
+	/// 他的 17 个护甲件（含斗篷、独有左肩）全在这个坐标上。
+	/// <b>它不出现任何护甲记录里</b>，所以打映射永远不会改写它 —— 拿它当"定位/身份"标记，
+	/// 就不用像以前那样为了留信标而牺牲一两个槽位不做替换。
+	/// </summary>
+	public const ulong DemocracyOfficerRootUnitId = 0x15678e360612b805UL;
+
+	/// <summary>
+	/// 民主官独有左肩（他这套 NPC 记录的 slot8 件）——兜底标记：他穿这套时一定有，
+	/// 而且只有他穿（<c>kit-instance.rules</c> 一直拿它当 marker）。缺点是被整身替换时会被藏掉。
+	/// </summary>
+	public const ulong DemocracyOfficerShoulderUnitId = 0x82595b5d94c57343UL;
+
+	/// <summary>
+	/// 这条护甲记录穿在身上时、除自身部件外还要一并按实例隐藏的 unit（目前只有民主官的头）。
 	/// <b>只在模型的头真的会显示时才用它</b>（头身合并生效）：否则民主官会没有头。
 	/// </summary>
 	public static IReadOnlyList<ulong> ExtraHideUnits(uint itemId)
-		=> itemId == DemocracyOfficerArmorId ? [DemocracyOfficerFaceUnitId]
+		=> itemId == DemocracyOfficerArmorId ? [DemocracyOfficerHeadUnitId]
 			: KitNpcRecords.TryGet(itemId, out var npc) ? npc.ExtraHideUnits
 			: [];
+
+	/// <summary>unit 资源的类型 id（`0xe0a48d0be9a7453f` = unit）。</summary>
+	private const ulong UnitAssetTypeId = 0xe0a48d0be9a7453fUL;
+
+	/// <summary>
+	/// 给民主官那套补一件 **slot0「头」**（他的头 unit 不属于任何护甲记录，权威表里没有它）。
+	/// <para>
+	/// 补上之后，"把民主官当映射目标"就和普通护甲**完全同构**，两个行为都由既有的换件链路给出：
+	/// </para>
+	/// <list type="bullet">
+	/// <item>视觉来源有 slot0 的件 ⇒ <c>link=头,来源的头</c>：引擎按正常换件把它挂在他头上
+	/// （不需要克隆、不需要按骨名重绑 —— 位置和姿势都由引擎给）。</item>
+	/// <item>视觉来源没有 ⇒ <c>link=头,隐藏占位</c>：他的头消失（"头已并进身体"那种素体就该这样）。</item>
+	/// </list>
+	/// <para>
+	/// 以前这件事靠"运行时在锚点旁边按实例藏头"这条专线（<c>repair=…,0,…,头,-</c>），
+	/// 实现上要额外一条通路，而且和换件结果互相打架；现在是同一份数据、同一条路。
+	/// </para>
+	/// <para>幂等：已经有这个件就原样返回。</para>
+	/// </summary>
+	public static IReadOnlyList<GameDataAuthorityKit> WithOfficerHead(IReadOnlyList<GameDataAuthorityKit> kits)
+	{
+		ArgumentNullException.ThrowIfNull(kits);
+		var index = -1;
+		for (var i = 0; i < kits.Count; i++)
+		{
+			if (kits[i].ItemId != DemocracyOfficerArmorId) continue;
+			index = i;
+			break;
+		}
+		if (index < 0) return kits;
+
+		var kit = kits[index];
+		var headKey = new AssetKey(UnitAssetTypeId, DemocracyOfficerHeadUnitId);
+		foreach (var piece in kit.Pieces)
+			if (piece.UnitAssetKey == headKey) return kits;
+
+		var pieces = new List<GameDataAuthorityPiece>(kit.Pieces.Count + 1);
+		pieces.AddRange(kit.Pieces);
+		// 身形取 Any（头与身形无关）；Weight / ToneVariations 对换件没有影响，取与他其它件同类的最小值。
+		pieces.Add(new GameDataAuthorityPiece(
+			RawBodyType: 3u,
+			BodyVariant: UnitMeshBodyVariant.Any,
+			Slot: 0u,
+			PartKind: UnitMeshPartKind.Helmet,
+			PieceType: 0u,
+			Weight: 1u,
+			ToneVariations: 0,
+			UnitAssetKey: headKey,
+			Resources: Array.Empty<GameDataAuthorityResourceReference>()));
+
+		var result = kits.ToArray();
+		result[index] = kit with { Pieces = pieces };
+		return result;
+	}
 
 	/// <summary>
 	/// 特殊 NPC：选品器里单独成行（带 NPC 标注、只在「套装」页出现），映射要求头并进身体。

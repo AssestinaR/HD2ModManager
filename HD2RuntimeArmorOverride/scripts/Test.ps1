@@ -81,6 +81,9 @@ try {
     & $LuaJit "$project/tests/test_armor_registry_protocol.lua" `
         "$project/src/armor_registry_protocol.lua"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_identity_probe.lua" `
+        "$project/src/armor_identity_probe.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 finally {
     Pop-Location
