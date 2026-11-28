@@ -162,7 +162,13 @@ public sealed record CliGlobalOptions(
 	// 不同来源模型自己的头身比也不一样。它只影响几何，不碰材质与任何 id，
 	// 所以改它不会让材质包失配 —— 但**会改变产物字节**，重构建必须带上同一个值
 	// 才是同一份产物（管理器把它当全局几何参数，每次重构建按当前设置传入）。
-	double? HeadScale = null);
+	double? HeadScale = null,
+	// --leg-refit on|off：腿部重拟合（只压缩腿让脚回到地面，见 RetargetOptions.LegRefit）。
+	// 不传 = 转换器默认（关）。与头部缩放同一类纯几何全局参数，管理器每次重构建按当前设置传入。
+	bool? LegRefit = null,
+	bool? ShoulderTwist = null,
+	bool? KneeBlend = null,
+	bool? ShoulderFix = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -193,6 +199,10 @@ public static class CliArgumentParser
 		double? albedoFactor = null;
 		// 头部缩放比例。null = 不给，转换器用自己的默认值（8/7）。
 		double? headScale = null;
+		bool? legRefit = null;
+		bool? shoulderTwist = null;
+		bool? shoulderFix = null;
+		bool? kneeBlend = null;
 		string? matcap = null;
 		string? donor = null;
 		string? file = null;
@@ -320,6 +330,33 @@ public static class CliArgumentParser
 					}
 
 					headScale = parsedHeadScale;
+					break;
+				case "--leg-refit":
+					var rawLegRefit = ReadValue(args, ref index, argument);
+					legRefit = rawLegRefit switch
+					{
+						"on" => true,
+						"off" => false,
+						_ => throw new CliUserException("InvalidOption",
+							$"--leg-refit 需要 on 或 off（腿部重拟合：压缩腿让脚回到地面），实际是 '{rawLegRefit}'。"),
+					};
+					break;
+				case "--shoulder-twist":
+				case "--shoulder-fix":
+				case "--knee-blend":
+					var rawJointOption = ReadValue(args, ref index, argument);
+					var jointOption = rawJointOption switch
+					{
+						"on" => true,
+						"off" => false,
+						_ => throw new CliUserException("InvalidOption", $"{argument} 需要 on 或 off，实际是 '{rawJointOption}'。"),
+					};
+					if (argument == "--shoulder-twist")
+						shoulderTwist = jointOption;
+					else if (argument == "--shoulder-fix")
+						shoulderFix = jointOption;
+					else
+						kneeBlend = jointOption;
 					break;
 				case "--donor":
 					donor = ReadValue(args, ref index, argument);
@@ -632,7 +669,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, headMergeConsent, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry, headScale));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, headMergeConsent, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry, headScale, legRefit, shoulderTwist, kneeBlend, shoulderFix));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)
