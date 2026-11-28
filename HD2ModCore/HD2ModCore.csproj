@@ -63,6 +63,8 @@
                       Link="RuntimeArmorRegistry\armor_override_runtime.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\player_armor_instances.lua"
                       Link="RuntimeArmorRegistry\player_armor_instances.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_identity_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_identity_probe.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\kit_instance_hider.lua"
                       Link="RuntimeArmorRegistry\kit_instance_hider.lua" />
     <!--

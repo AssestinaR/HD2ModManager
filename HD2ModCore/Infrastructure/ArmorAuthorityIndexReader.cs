@@ -112,6 +112,9 @@ public static class ArmorAuthorityIndexReader
 			.ToArray();
 		// 飞船 NPC（女舰长、维修技术员）的伪记录：没有护甲记录，给它们一件「根 unit」，映射页才能像护甲一样映射到他们身上。
 		var withPieces = realKits.Length == 0 ? realKits : KitNpcRecords.AppendTo(realKits).ToArray();
+		// 民主官的头（unit 387f271c7f49614f）不属于任何护甲记录，权威表里没有 slot0 的件。
+		// 补一件进去，映射他就和映射普通护甲同构：来源有头 ⇒ 换头，没有 ⇒ 头隐藏（都走 link 换件）。
+		withPieces = KitNonPlayerArmors.WithOfficerHead(withPieces).ToArray();
 
 		return new GameDataAuthoritySnapshot(
 			GameDataAuthoritySourceKind.IndexDatabase,

@@ -1396,8 +1396,8 @@ public sealed class LowPollutionMappingTests
 		Assert.Equal(LowPollutionMappingStatus.Mapped, joint[KitNonPlayerArmors.DemocracyOfficerArmorId].Status);
 
 		// 3 槽：模型的头显示不出来，民主官保持原版的脸，不能藏（否则他没有头）。
-		var face = Hex(KitNonPlayerArmors.DemocracyOfficerFaceUnitId);
-		Assert.DoesNotContain(face, joint[KitNonPlayerArmors.DemocracyOfficerArmorId].Hide);
+		var head = Hex(KitNonPlayerArmors.DemocracyOfficerHeadUnitId);
+		Assert.DoesNotContain(head, joint[KitNonPlayerArmors.DemocracyOfficerArmorId].Hide);
 		Assert.Contains(joint[KitNonPlayerArmors.DemocracyOfficerArmorId].Notes, note => note.Contains("头身合并", StringComparison.Ordinal));
 	}
 
@@ -1414,10 +1414,10 @@ public sealed class LowPollutionMappingTests
 		var merged = LowPollutionMappingPlanner.PlanArmorGroup(
 			index, Layout(headMerge: true), [1490803405u, KitNonPlayerArmors.DemocracyOfficerArmorId], "m1");
 
-		var face = Hex(KitNonPlayerArmors.DemocracyOfficerFaceUnitId);
+		var head = Hex(KitNonPlayerArmors.DemocracyOfficerHeadUnitId);
 		Assert.Equal(LowPollutionMappingStatus.Mapped, merged[KitNonPlayerArmors.DemocracyOfficerArmorId].Status);
-		Assert.Contains(face, merged[KitNonPlayerArmors.DemocracyOfficerArmorId].Hide);
-		Assert.DoesNotContain(face, merged[1490803405u].Hide);
+		Assert.Contains(head, merged[KitNonPlayerArmors.DemocracyOfficerArmorId].Hide);
+		Assert.DoesNotContain(head, merged[1490803405u].Hide);
 		// 披风（slot 1）：民主官是 NPC，原版披风也要藏；玩家的 FS-05 的披风留给玩家自己选，不藏。
 		Assert.Contains(Hex(0xca9e), merged[KitNonPlayerArmors.DemocracyOfficerArmorId].Hide);
 		Assert.DoesNotContain(Hex(0xca9e), merged[1490803405u].Hide);

@@ -26,6 +26,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private readonly IKitPollutionService? _kitPollution;
 	private static readonly ModNodeId ArmorRegistryNodeId = new(Guid.Parse("6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca"));
 	private static readonly ModNodeId PhysicsRuntimeNodeId = new(Guid.Parse("7c1e2b90-5f3a-4d68-9a11-2b7c4e5f6a01"));
+	/// <summary>一次性诊断探针的节点 id（只在 <c>ArmorRegistry/identity-probe.on</c> 存在时用）。</summary>
+	private static readonly ModNodeId IdentityProbeNodeId = new(Guid.Parse("b41d7f28-3c95-4a60-8e5b-1f7a2c9d4e63"));
 	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
 
 	/// <summary>
@@ -522,9 +524,47 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			}
 		}
 
+		// 一次性诊断：ArmorRegistry 下放了 identity-probe.on 时，把只读探针并进启动文档。
+		// 独占模式下没有加载器，addon 形态的 Lua mod 不会被任何东西加载（2026-11-24 实机确认），
+		// 所以探针只能借用 boot。两种情形：
+		//   ① 映射/物理本来就占着 boot ⇒ 探针作为最后一个块并进同一份文档；
+		//   ② 两个模式都关、boot 空着 ⇒ 由探针**单独**占一次 boot（下面 probeOnlyBoot）。
+		var probeRequested = IdentityProbeRequested();
+		LuaDocumentSource? probeOnlyBoot = null;
+		if (probeRequested && armorBootDocument is null && physicsBootDocument is null)
+		{
+			try
+			{
+				var probeDocument = await CreateBootDocumentAsync(
+					gameDataDirectory,
+					[new BootBlock("HD2 Armor Identity Probe", IdentityProbeLuaSource.Load(), IdentityProbeLuaSource.ResourceName)],
+					cancellationToken).ConfigureAwait(false);
+				probeOnlyBoot = new LuaDocumentSource(
+					IdentityProbeNodeId,
+					int.MaxValue,
+					new PatchGroupIdentity(IdentityProbeNodeId, $"{LuaAssetKeys.BootArchiveId:x16}", 0, int.MaxValue),
+					probeDocument);
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Info,
+					"IdentityProbeBootOnly",
+					"映射与物理都未启用：本次部署只投放只读护甲身份探针（ArmorRegistry/identity-probe.on 存在）。"));
+			}
+			catch (Exception exception) when (exception is IOException
+				or UnauthorizedAccessException
+				or InvalidDataException
+				or LuaPatchFormatException)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Error,
+					"IdentityProbePreparationFailed",
+					$"无法准备护甲身份探针：{exception.Message}",
+					ExceptionMessage: exception.ToString()));
+			}
+		}
 		// 现在的规则只有两条：
 		//   1. 第三方 Lua patch 一律原样部署，管理器不解析、不合并、不改一个字节；
 		//   2. 独占模式下运行时必须独占 boot，别人也占就明确报错，让用户自己选。
+		if (probeOnlyBoot is not null) physicsBootDocument = probeOnlyBoot;
 		if (armorBootDocument is null && physicsBootDocument is null)
 		{
 			// 外置 / 真映射：管理器自己不占 boot，只把别人的争用情况说清楚。
@@ -618,6 +658,20 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				hiderBlocks.Count,
 				new BootBlock("HD2 Kit Instance Hider", KitInstanceHiderLuaSource.Load(), KitInstanceHiderLuaSource.ResourceName)));
 			bootDocument = bootDocument with { Document = bootDocument.Document with { Blocks = hiderBlocks } };
+		}
+		// 一次性诊断：boot 已经被别的块占着时，把只读探针作为最后一个块并进去。
+		// （boot 空着的情形上面 probeOnlyBoot 已经单独占了一次 boot，这里不再重复。）
+		if (probeRequested && probeOnlyBoot is null)
+		{
+			var probeBlocks = bootDocument.Document.Blocks.ToList();
+			probeBlocks.Add(BuildBootBlock(
+				probeBlocks.Count,
+				new BootBlock("HD2 Armor Identity Probe", IdentityProbeLuaSource.Load(), IdentityProbeLuaSource.ResourceName)));
+			bootDocument = bootDocument with { Document = bootDocument.Document with { Blocks = probeBlocks } };
+			issues.Add(new CoreIssue(
+				CoreIssueSeverity.Info,
+				"IdentityProbeIncluded",
+				"已把只读护甲身份探针并入启动文档（ArmorRegistry/identity-probe.on 存在）。"));
 		}
 		documents.Add(bootDocument);
 		var filteredIndex = FilterPatchIndex(patchIndex, legacyPhysicsGroups);
@@ -1155,6 +1209,20 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			.ToLowerInvariant();
 
 	/// <summary>boot 里的一个运行时块：名字（诊断用）+ 源码 + 给 loadstring 的 chunk 名。</summary>
+	/// <summary>是否请求了一次性护甲身份探针（开关文件在 <see cref="RuntimeArmorRegistryService.RegistryRoot"/> 下）。</summary>
+	private bool IdentityProbeRequested()
+	{
+		if (_armorRegistry is null) return false;
+		try
+		{
+			return File.Exists(Path.Combine(_armorRegistry.RegistryRoot, IdentityProbeLuaSource.EnableFileName));
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException)
+		{
+			return false;
+		}
+	}
+
 	private sealed record BootBlock(string Name, string Source, string ChunkName);
 
 	private static ValueTask<LuaPatchDocument> CreateArmorRegistryDocumentAsync(
